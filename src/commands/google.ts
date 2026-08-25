@@ -193,7 +193,10 @@ function readPending(): PendingConnect | null {
   try {
     if (!existsSync(pendingPath())) return null;
     const p = JSON.parse(readFileSync(pendingPath(), 'utf-8')) as PendingConnect;
-    if (Date.now() - Date.parse(p.created_at) > PENDING_TTL_MS) {
+    // A corrupt created_at parses to NaN; `NaN > TTL` is false, which would
+    // make the pending record immortal. Non-finite age = expired.
+    const age = Date.now() - Date.parse(p.created_at);
+    if (!Number.isFinite(age) || age > PENDING_TTL_MS) {
       rmSync(pendingPath(), { force: true });
       return null;
     }
@@ -305,7 +308,7 @@ async function resolveClientCreds(
 async function finishConnect(
   vault: CredentialVault,
   f: ConnectFlags,
-  tokens: { access_token: string; refresh_token?: string; expires_in: number },
+  tokens: { access_token: string; refresh_token?: string; expires_in: number; scope?: string },
   clientId: string | undefined,
   clientRef: 'byo' | 'hosted-relay',
   fetchImpl: typeof fetch,
@@ -336,7 +339,16 @@ async function finishConnect(
     },
     meta: {
       account: email,
-      scopes: scopesOverride ?? scopesForServices(f.services),
+      // The token response's `scope` is what Google ACTUALLY granted — the
+      // consent screen lets users uncheck scopes, so the requested set is a
+      // fallback, never the truth. Persisting the grant is what lets the
+      // sync preflight say `scope_missing` instead of opaque per-sweep 403s.
+      scopes: (() => {
+        const granted = tokens.scope?.split(/\s+/).filter(Boolean);
+        return granted && granted.length > 0
+          ? granted
+          : (scopesOverride ?? scopesForServices(f.services));
+      })(),
       ...(clientId ? { client_id: clientId } : {}),
       connected_at: prior?.meta.connected_at ?? nowIso,
       last_refresh_ok_at: nowIso,
@@ -382,13 +394,19 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
       process.stderr.write(consentBlock(session.consent_url, 'loopback', f.account) + '\n');
       if (!f.noBrowser && !sniffHeadless()) openBrowser(session.consent_url);
       const claim = await pollClaim(base, session, { timeoutMs: f.timeoutMs }, fetchImpl);
+      // Malformed relay expiry parses to NaN, which Math.max propagates and
+      // Date#toISOString later throws on — clamp to a safe default instead.
+      const expMs = Date.parse(claim.expiry);
       const entry = await finishConnect(
         vault,
         f,
         {
           access_token: claim.access_token,
           refresh_token: claim.refresh_token,
-          expires_in: Math.max(60, Math.round((Date.parse(claim.expiry) - Date.now()) / 1000)),
+          expires_in: Number.isFinite(expMs)
+            ? Math.max(60, Math.round((expMs - Date.now()) / 1000))
+            : 3600,
+          ...(claim.scopes.length > 0 ? { scope: claim.scopes.join(' ') } : {}),
         },
         undefined,
         'hosted-relay',
@@ -417,11 +435,17 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
         },
         fetchImpl,
       );
+      // Step 1's --account/--reauth binding must survive into this
+      // invocation — the printed next_action doesn't carry --account, so a
+      // wrong-account consent in the two-step flow would otherwise pass
+      // finishConnect's identity check unexamined.
+      const fBound = !f.account && pending.account_hint ? { ...f, account: pending.account_hint } : f;
       const entry = await finishConnect(
-        vault, f, tokens, client.client_id, 'byo', fetchImpl,
+        vault, fBound, tokens, client.client_id, 'byo', fetchImpl,
         undefined,
-        // Step 1's (possibly narrowed) scope grant is the truth, not this
-        // invocation's default f.services.
+        // Step 1's (possibly narrowed) scope request is the fallback when the
+        // token response carries no `scope`; never this invocation's default
+        // f.services.
         pending.scopes,
       );
       // Only the flow that CONSUMED the pending record clears it — a
@@ -450,6 +474,21 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
       );
       setCliExitVerdict(2);
       return;
+    }
+    // Refresh tokens are bound to the client that minted them: silently
+    // replacing the stored client (stale env vars suffice) breaks every
+    // sibling account's refresh with a misleading "revoked" diagnosis.
+    // Warn loudly; proceeding is still legal (BYO users rotate clients).
+    const priorClient = await vault.getClient(GOOGLE_PROVIDER);
+    if (priorClient && priorClient.client_id !== creds.client_id) {
+      const accounts = await vault.list({ provider: GOOGLE_PROVIDER });
+      if (accounts.length > 0) {
+        process.stderr.write(
+          `[google] warning: replacing the stored OAuth client (${priorClient.client_id.slice(0, 12)}…) ` +
+            `with a different one. Refresh tokens are client-bound — if refresh starts failing for the ` +
+            `${accounts.length} already-connected account(s), run \`gbrain google connect --reauth <email>\`.\n`,
+        );
+      }
     }
     await vault.putClient({
       provider: GOOGLE_PROVIDER,
@@ -500,6 +539,9 @@ export async function runGoogleConnect(args: string[]): Promise<void> {
           fetchImpl,
         );
         const entry = await finishConnect(vault, f, tokens, creds.client_id, 'byo', fetchImpl);
+        // The TTY paste consumed the pending record it wrote above; a FAILED
+        // paste deliberately leaves it (recoverable via --code, same state).
+        clearPending();
         printConnected(f.json, entry);
         return;
       }

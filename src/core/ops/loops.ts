@@ -66,7 +66,10 @@ async function googleSourceFreshness(
       }));
     return { sources, stale: sources.length > 0 && sources.every((s) => s.stale) };
   } catch {
-    return { sources: [], stale: false };
+    // Fail TOWARD stale: this surface's invariant is "stale-but-confident is
+    // worse than nothing" — a DB error must not present confident output
+    // with the stale warning suppressed.
+    return { sources: [], stale: true };
   }
 }
 

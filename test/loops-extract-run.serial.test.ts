@@ -379,4 +379,92 @@ describe('runLoopsExtract', () => {
     );
     expect(Number(awaiting[0].n)).toBe(0);
   });
+
+  test('verbatim evidence: a fabricated quote is BLANKED (loop lands, edge label falls back to text); a genuine quote survives whitespace-normalized', async () => {
+    const slug = 'emails/2026/08/2026-08-23-verbatim-thread-11223344.md';
+    await engine.putPage(
+      slug,
+      {
+        type: 'email',
+        title: 'Re: pilot metrics',
+        // The genuine quote is split across a newline in the page — the
+        // whitespace-normalized match must still accept it.
+        compiled_truth:
+          'Alice: I will share the pilot metrics\nby Wednesday.\n\nMe: sounds good.\n',
+        frontmatter: { thread_id: 'thread-11223344', date: '2026-08-23T10:00:00Z' },
+      },
+      { sourceId: SRC },
+    );
+    chatImpl = async () => ({
+      text: JSON.stringify({
+        commitments: [
+          {
+            direction: 'owed_to_me',
+            text: 'Alice to share the pilot metrics',
+            counterparty_name: 'Alice Example',
+            counterparty_email: 'alice@example.com',
+            due_iso: null,
+            // Genuine substring (modulo the newline collapse) → kept.
+            quote: 'I will share the pilot metrics by Wednesday.',
+          },
+          {
+            direction: 'owed_by_me',
+            text: 'Send Alice the compliance checklist',
+            counterparty_name: 'Alice Example',
+            counterparty_email: 'alice@example.com',
+            due_iso: null,
+            // Appears NOWHERE in the thread → must be blanked.
+            quote: 'I promise to send the compliance checklist by Tuesday.',
+          },
+        ],
+        decisions_pending: [
+          // Fabricated decision quote → blanked on the decision row too.
+          { text: 'Pick the pilot cohort size', quote: 'Should we run 10 or 100 users?' },
+        ],
+      }),
+      stopReason: 'end',
+    });
+
+    const r = await runLoopsExtract(engine, { slug, sourceId: SRC });
+    expect(r.status).toBe('extracted');
+    expect(r.commitments).toBe(2); // the loop still LANDS despite the fake quote
+    expect(r.decisions).toBe(1);
+    expect(r.loop_ids.length).toBe(3);
+
+    const rows = await engine.executeRaw<{ summary: string; evidence: string }>(
+      `SELECT summary, evidence::text AS evidence FROM open_loops
+        WHERE source_id = $1 AND page_slug = $2 ORDER BY id`,
+      [SRC, slug],
+    );
+    expect(rows.length).toBe(3);
+    const evidenceOf = (summary: string): Record<string, unknown>[] => {
+      const row = rows.find((x) => x.summary === summary);
+      expect(row).toBeDefined();
+      return JSON.parse(row!.evidence) as Record<string, unknown>[];
+    };
+
+    // Genuine quote: kept verbatim (the model's single-space form).
+    expect(evidenceOf('Alice to share the pilot metrics')).toEqual([
+      { page_slug: slug, quote: 'I will share the pilot metrics by Wednesday.' },
+    ]);
+    // Fabricated quote: evidence carries NO quote key at all.
+    expect(evidenceOf('Send Alice the compliance checklist')).toEqual([{ page_slug: slug }]);
+    expect(evidenceOf('Pick the pilot cohort size')).toEqual([{ page_slug: slug }]);
+
+    // Typed edges: the genuine commitment's edge is labeled with its quote;
+    // the fabricated one falls back to the commitment TEXT — the
+    // hallucinated sentence never reaches the graph.
+    const edges = await engine.executeRaw<{ link_type: string; context: string }>(
+      `SELECT l.link_type, l.context FROM links l
+         JOIN pages fp ON fp.id = l.from_page_id
+        WHERE l.link_source = 'google-loops' AND fp.slug = $1
+        ORDER BY l.link_type`,
+      [slug],
+    );
+    expect(edges.length).toBe(2);
+    const byType = Object.fromEntries(edges.map((e) => [e.link_type, e.context]));
+    expect(byType['awaiting_reply_from']).toBe('I will share the pilot metrics by Wednesday.');
+    expect(byType['owes_to']).toBe('Send Alice the compliance checklist');
+    for (const e of edges) expect(e.context).not.toContain('compliance checklist by Tuesday');
+  });
 });

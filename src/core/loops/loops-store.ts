@@ -100,7 +100,7 @@ function normalizeRow(r: Record<string, unknown>): OpenLoopRow {
 export async function upsertOpenLoop(
   engine: BrainEngine,
   loop: OpenLoopUpsert,
-): Promise<{ id: number; created: boolean }> {
+): Promise<{ id: number; created: boolean; applied: boolean }> {
   const rows = await engine.executeRaw<{ id: number; created: boolean }>(
     `INSERT INTO open_loops (
        source_id, dedup_key, loop_type, counterparty_slug, counterparty_email,
@@ -125,6 +125,8 @@ export async function upsertOpenLoop(
        closed_at = NULL,
        closed_by = NULL,
        updated_at = now()
+     WHERE open_loops.status = 'open'
+        OR EXCLUDED.last_activity_at > open_loops.last_activity_at
      RETURNING id, (xmax = 0) AS created`,
     [
       loop.sourceId,
@@ -143,7 +145,18 @@ export async function upsertOpenLoop(
       loop.lastActivityAt ?? null,
     ],
   );
-  return { id: Number(rows[0].id), created: Boolean(rows[0].created) };
+  // The DO UPDATE's WHERE is the manual-close guard: a closed (done/dropped/
+  // stale) row only reopens on GENUINELY newer activity. Without it, any
+  // re-render of an unchanged thread (label-only history touch, re-extraction
+  // of the same content) would silently revert `gbrain loops done`.
+  if (rows.length > 0) {
+    return { id: Number(rows[0].id), created: Boolean(rows[0].created), applied: true };
+  }
+  const existing = await engine.executeRaw<{ id: number }>(
+    `SELECT id FROM open_loops WHERE source_id = $1 AND dedup_key = $2`,
+    [loop.sourceId, loop.dedupKey],
+  );
+  return { id: Number(existing[0]?.id ?? 0), created: false, applied: false };
 }
 
 /** Close one loop by id (scoped to its source). Returns the row, or null. */

@@ -148,6 +148,91 @@ describe('upsertOpenLoop', () => {
   });
 });
 
+describe('upsertOpenLoop manual-close guard', () => {
+  const T_OLD = '2026-08-10T00:00:00.000Z';
+  const T_BASE = '2026-08-20T00:00:00.000Z';
+  const T_NEWER = '2026-08-24T00:00:00.000Z';
+
+  test('re-upsert with the SAME lastActivityAt leaves a manually-closed row untouched (applied: false, original id)', async () => {
+    const first = await upsertOpenLoop(engine, loop({ lastActivityAt: T_BASE }));
+    expect(first.created).toBe(true);
+    expect(first.applied).toBe(true);
+    const closed = await closeOpenLoop(engine, 'g1', first.id, 'done', 'manual');
+    expect(closed?.status).toBe('done');
+
+    // The exact re-render-of-an-unchanged-thread case: same activity time.
+    const again = await upsertOpenLoop(
+      engine,
+      loop({ summary: 'same-activity re-render', lastActivityAt: T_BASE }),
+    );
+    expect(again.applied).toBe(false);
+    expect(again.created).toBe(false);
+    expect(again.id).toBe(first.id); // the untouched-row id is still reported
+
+    const rows = await listOpenLoops(engine, { sourceIds: ['g1'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('done'); // `gbrain loops done` was NOT reverted
+    expect(rows[0].closed_by).toBe('manual');
+    expect(rows[0].closed_at).not.toBeNull();
+    expect(rows[0].summary).toBe(loop().summary); // no field merged either
+
+    // An OLDER activity time is guarded identically.
+    const older = await upsertOpenLoop(
+      engine,
+      loop({ summary: 'older re-render', lastActivityAt: T_OLD }),
+    );
+    expect(older.applied).toBe(false);
+    expect(older.id).toBe(first.id);
+    expect((await listOpenLoops(engine, { sourceIds: ['g1'] }))[0].status).toBe('done');
+  });
+
+  test('re-upsert with a strictly NEWER lastActivityAt reopens the closed row (applied: true)', async () => {
+    const { id } = await upsertOpenLoop(engine, loop({ lastActivityAt: T_BASE }));
+    await closeOpenLoop(engine, 'g1', id, 'done', 'manual');
+
+    const again = await upsertOpenLoop(
+      engine,
+      loop({ summary: 'they pinged again', lastActivityAt: T_NEWER }),
+    );
+    expect(again.applied).toBe(true);
+    expect(again.created).toBe(false);
+    expect(again.id).toBe(id);
+
+    const rows = await listOpenLoops(engine, { sourceIds: ['g1'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('open');
+    expect(rows[0].closed_at).toBeNull();
+    expect(rows[0].closed_by).toBeNull();
+    expect(rows[0].summary).toBe('they pinged again');
+    expect(toMs(rows[0].last_activity_at)).toBe(Date.parse(T_NEWER));
+  });
+
+  test('an OPEN row still merges normally on an older or equal lastActivityAt (applied: true)', async () => {
+    const { id } = await upsertOpenLoop(engine, loop({ lastActivityAt: T_BASE }));
+
+    const older = await upsertOpenLoop(
+      engine,
+      loop({ summary: 'older evidence re-render', lastActivityAt: T_OLD }),
+    );
+    expect(older.applied).toBe(true);
+    expect(older.created).toBe(false);
+    expect(older.id).toBe(id);
+
+    const equal = await upsertOpenLoop(
+      engine,
+      loop({ summary: 'equal-time re-render', lastActivityAt: T_BASE }),
+    );
+    expect(equal.applied).toBe(true);
+    expect(equal.id).toBe(id);
+
+    const rows = await listOpenLoops(engine, { sourceIds: ['g1'] });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('open');
+    expect(rows[0].summary).toBe('equal-time re-render'); // merge really applied
+    expect(toMs(rows[0].last_activity_at)).toBe(Date.parse(T_BASE)); // GREATEST kept
+  });
+});
+
 describe('closeOpenLoop', () => {
   test('closes only open rows; a second close returns null', async () => {
     const { id } = await upsertOpenLoop(engine, loop());

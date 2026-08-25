@@ -175,10 +175,15 @@ function withVaultLock<T>(vaultPath: string, fn: () => T): T {
   // The vault dir may not exist yet (first write on a fresh GBRAIN_HOME) —
   // an ENOENT from openSync must not read as "lock held".
   mkdirSync(gbrainPath(), { recursive: true });
+  // Only the process that CREATED the lock may remove it — a fail-open exit
+  // (deadline, odd fs error) that deleted a live holder's lock would let a
+  // third writer in, recreating the exact lost-update race the lock prevents.
+  let acquired = false;
   for (;;) {
     try {
       const fd = openSync(lockPath, 'wx');
       closeSync(fd);
+      acquired = true;
       break;
     } catch (e) {
       // Only EEXIST means contention; any other failure (permissions, odd
@@ -202,7 +207,7 @@ function withVaultLock<T>(vaultPath: string, fn: () => T): T {
   try {
     return fn();
   } finally {
-    rmSync(lockPath, { force: true });
+    if (acquired) rmSync(lockPath, { force: true });
   }
 }
 

@@ -603,6 +603,15 @@ describe('google-source materialize', () => {
         const newCalls = fx.calls.slice(callsBefore);
         expect(newCalls.some((c) => c.includes('/users/me/messages?'))).toBe(true);
         expect(newCalls.some((c) => c.endsWith('/users/me/profile'))).toBe(true);
+        // H6 anchor ordering: getProfile fires BEFORE listMessageIds. A
+        // message arriving between the two calls is then either in the
+        // listing (post-anchor arrival) or replayed by history.list from the
+        // anchor; anchoring AFTER the listing would drop it forever.
+        const profileIdx = newCalls.findIndex((c) => c.endsWith('/users/me/profile'));
+        const messagesIdx = newCalls.findIndex((c) => c.includes('/users/me/messages?'));
+        expect(profileIdx).toBeGreaterThanOrEqual(0);
+        expect(messagesIdx).toBeGreaterThanOrEqual(0);
+        expect(profileIdx).toBeLessThan(messagesIdx);
 
         const state = readGoogleState(dir);
         expect(state.gmail_history_id).toBe('2000'); // fresh anchor
@@ -750,6 +759,137 @@ describe('google-source materialize', () => {
         // The hand-authored page survives both sweeps untouched.
         expect(readFileSync(bobPath, 'utf-8')).toBe(handAuthored);
         expect(await slugsWhere(`slug = 'people/bob-example'`)).toEqual(['people/bob-example']);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('poison ledger: failed runs never stamp last_sync_at and increment the ledger; the 4th run skips the poisoned thread; --full retries it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-poison-'));
+    const fx = emptyFx();
+    gmailFixture(fx);
+    const vault = makeVault();
+    const seededSyncAt = '2026-01-01T00:00:00.000Z';
+    const lastSyncAt = async (): Promise<string | null> => {
+      const rows = await engine.executeRaw<{ last_sync_at: Date | string | null }>(
+        `SELECT last_sync_at FROM sources WHERE id = 'gsrc'`,
+      );
+      const v = rows[0].last_sync_at;
+      return v === null ? null : new Date(v).toISOString();
+    };
+    try {
+      await insertGoogleSource(dir);
+      await engine.executeRaw(
+        `UPDATE sources SET last_sync_at = $1::timestamptz WHERE id = 'gsrc'`,
+        [seededSyncAt],
+      );
+      await withHome(async () => {
+        // (a) Thread B persistently 500s: every run is partial, the ledger
+        // increments ACROSS runs, and last_sync_at is never stamped — a
+        // wedged sweep must read stale to the staleness gate, not fresh.
+        fx.failThreads.add(T_B);
+        for (let run = 1; run <= 3; run++) {
+          const res = await sweep(dir, fx, vault, {}, 'gmail');
+          expect(res.status).toBe('partial');
+          expect(res.failedFiles).toBe(1);
+          const state = readGoogleState(dir);
+          expect(state.gmail_fail_counts?.[T_B]).toBe(run);
+          expect(state.gmail_backfill_done).toBe(false);
+          expect(await lastSyncAt()).toBe(seededSyncAt); // NOT updated
+        }
+
+        // (b) Run 4: three recorded failures = poisoned. The thread is
+        // SKIPPED (never even fetched), the backfill completes around it,
+        // and last_sync_at finally stamps.
+        const callsBefore = fx.calls.length;
+        const res4 = await sweep(dir, fx, vault, {}, 'gmail');
+        expect(res4.failedFiles).toBeUndefined();
+        const run4Calls = fx.calls.slice(callsBefore);
+        expect(run4Calls.some((c) => c.includes(`/threads/${T_B}`))).toBe(false);
+        const state4 = readGoogleState(dir);
+        expect(state4.gmail_backfill_done).toBe(true);
+        expect(state4.gmail_backfill_floor_ms).toBeNull();
+        expect(state4.gmail_fail_counts?.[T_B]).toBe(3); // skip is not forgiveness
+        expect(await lastSyncAt()).not.toBe(seededSyncAt); // stamped at last
+        // The poisoned thread never materialized.
+        const slugs4 = await slugsWhere(`slug LIKE 'emails/%'`);
+        expect(slugs4.some((s) => s.includes('contract-question'))).toBe(false);
+        expect(slugs4.some((s) => s.includes('quarterly-zephyr-roadmap'))).toBe(true);
+
+        // (c) --full resets the ledger, so the (now healthy) thread is
+        // retried instead of being skipped forever.
+        fx.failThreads.clear();
+        fx.history = [[T_B]];
+        fx.historyResponseId = '1010';
+        const res5 = await sweep(dir, fx, vault, { full: true }, 'gmail');
+        expect(res5.status).toBe('synced');
+        expect(res5.added).toBe(1);
+        const state5 = readGoogleState(dir);
+        expect(state5.gmail_fail_counts ?? {}).toEqual({}); // reset + success
+        const slugs5 = await slugsWhere(`slug LIKE 'emails/%'`);
+        expect(slugs5.some((s) => s.includes('contract-question'))).toBe(true);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('contacts: bare tombstone deletes by google_contact_id; a rename moves the page; an unknown tombstone is a no-op', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gsrc-contacts-tomb-'));
+    const fx = emptyFx();
+    const vault = makeVault();
+    contactsFixture(fx); // alice (c000000001) + dana (c000000002)
+    try {
+      await insertGoogleSource(dir);
+      await withHome(async () => {
+        const res1 = await sweep(dir, fx, vault, {}, 'contacts');
+        expect(res1.added).toBe(2);
+        expect(existsSync(join(dir, 'people/alice-example.md'))).toBe(true);
+        expect(existsSync(join(dir, 'people/dana-example.md'))).toBe(true);
+
+        // (a) Deletion tombstone carrying ONLY resourceName + deleted — no
+        // names, no emails, so slug derivation yields nothing. The page must
+        // still die via the google_contact_id-keyed DB lookup.
+        fx.contactsDelta = [{ resourceName: 'people/c000000002', metadata: { deleted: true } }];
+        const res2 = await sweep(dir, fx, vault, {}, 'contacts');
+        expect(res2.deleted).toBe(1);
+        expect(existsSync(join(dir, 'people/dana-example.md'))).toBe(false); // file removed
+        expect(await slugsWhere(`slug = 'people/dana-example'`)).toEqual([]); // live row gone
+        // Honest current behavior: deletePageByRelPath routes through
+        // engine.deletePages, which HARD-deletes the row (DELETE FROM pages),
+        // so nothing remains — deleted or otherwise.
+        const gone = await engine.executeRaw<{ n: number | string }>(
+          `SELECT count(*) AS n FROM pages
+           WHERE source_id = 'gsrc' AND slug = 'people/dana-example'`,
+        );
+        expect(Number(gone[0].n)).toBe(0);
+
+        // (b) Rename: same resourceName, new displayName → the new slug
+        // imports AND the old page is deleted instead of stranding.
+        fx.contactsDelta = [
+          {
+            resourceName: 'people/c000000001',
+            names: [{ displayName: 'Alicia Example', metadata: { primary: true } }],
+            emailAddresses: [{ value: 'alice@example.com' }],
+          },
+        ];
+        const res3 = await sweep(dir, fx, vault, {}, 'contacts');
+        expect(res3.added).toBe(1);
+        expect(res3.deleted).toBe(1);
+        expect(existsSync(join(dir, 'people/alicia-example.md'))).toBe(true);
+        expect(existsSync(join(dir, 'people/alice-example.md'))).toBe(false);
+        expect(await slugsWhere(`slug LIKE 'people/%'`)).toEqual(['people/alicia-example']);
+        const md = readFileSync(join(dir, 'people/alicia-example.md'), 'utf-8');
+        expect(md).toContain('google_contact_id: "people/c000000001"');
+        expect(md).toContain('title: "Alicia Example"');
+
+        // (c) Tombstone for a never-imported contact: a clean no-op.
+        fx.contactsDelta = [{ resourceName: 'people/c999999999', metadata: { deleted: true } }];
+        const res4 = await sweep(dir, fx, vault, {}, 'contacts');
+        expect(res4.status).toBe('up_to_date');
+        expect(res4.deleted).toBe(0);
+        expect(await slugsWhere(`slug LIKE 'people/%'`)).toEqual(['people/alicia-example']);
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

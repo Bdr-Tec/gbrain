@@ -155,7 +155,20 @@ async function runExport(args: string[]): Promise<void> {
 
 async function runImport(args: string[]): Promise<void> {
   const json = args.includes('--json');
-  const file = args.find((a) => !a.startsWith('--'));
+  // Positional = first non-flag token that is NOT a valued flag's value
+  // (`--passphrase-env VAR bundle.json` must not pick up `VAR` as the file).
+  const VALUED_FLAGS = new Set(['--passphrase-env']);
+  let file: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (VALUED_FLAGS.has(a)) {
+      i++;
+      continue;
+    }
+    if (a.startsWith('--')) continue;
+    file = a;
+    break;
+  }
   if (!file) {
     console.error('Usage: gbrain creds import <bundle-file> [--passphrase-env VAR] [--json]');
     process.exit(2);

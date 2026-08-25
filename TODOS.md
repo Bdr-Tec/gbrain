@@ -46,6 +46,39 @@
   keep growing the labeled fixture corpus (`test/google-loop-detect.test.ts`)
   with every observed false-positive class. **Effort:** S, ongoing.
 
+- [ ] **P3 — Turn-flip close precision: auto-reply + third-party + spoof
+  hardening.** **What:** any non-noise counterparty message closes
+  `unanswered_outbound` as `reply_detected` — an OOO auto-reply
+  (`Auto-Submitted`/`X-Autoreply` headers, currently not fetched), a
+  third-party chime-in from someone other than the loop's counterparty, or a
+  message spoofing one of `myAddresses` all count as answers. Fetch the
+  relevant headers in `google-clients.ts:getThread` and teach
+  `loop-detect.ts` to hold instead of close on them. **Effort:** M
+  (adversarial-review follow-up from the v0.47.0.0 wave).
+
+- [ ] **P3 — Commitment dedup on model-worded text.** **What:**
+  `commit:<sha8({t,d,x: text.toLowerCase()})>` mints a NEW loop row whenever
+  re-extraction rephrases the commitment — duplicates accumulate over a
+  thread's life. Consider per-(thread, direction) replace semantics or fuzzy
+  dedup before upsert (`src/core/google/loops-extract.ts`). **Effort:** M.
+
+- [ ] **P3 — Delta lane history pagination cap has no partial mode.**
+  **What:** `listHistoryThreadIds` throws at the 500-page safety cap (a
+  partial history drain must not advance the cursor), so an extremely busy
+  account re-throws each run until the historyId expires (~1 week) and the
+  bounded windowed fallback takes over. Consider chunked history draining
+  with an intermediate cursor commit. **Effort:** M, affects only extreme
+  volumes. Related: same-second sibling messages at an exact whole-second
+  backfill floor can be skipped across the cap boundary (rare; needs
+  overlap-by-1s on the `before:` bound).
+
+- [ ] **P3 — Per-loop staleness marker for mixed-freshness brains.**
+  **What:** `open_loops.stale` is true only when EVERY google source is
+  stale; a brain with one fresh and one 3-week-dead source presents the dead
+  source's loops as fresh. Attach per-loop `source_stale` (the per-source
+  flag already computed in `googleSourceFreshness`) and render it in the
+  digest. **Effort:** S.
+
 ## Daemon env-file lane follow-ups (#2608 / #4443 takeover, filed 2026-08-21)
 
 - [ ] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**

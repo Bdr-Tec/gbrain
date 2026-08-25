@@ -35,7 +35,9 @@ export async function computeGoogleOauthCheck(): Promise<Check> {
       const account = m.account ?? m.id;
       const lastOkMs = m.last_refresh_ok_at ? Date.parse(m.last_refresh_ok_at) : Date.parse(m.connected_at);
       const daysSinceOk = (now - lastOkMs) / 86_400_000;
-      const accessExpired = m.expiry ? Date.parse(m.expiry) < now : true;
+      // Missing expiry (imported/relay entries) is UNKNOWN, not expired — a
+      // false `fail` here would page the operator over a healthy account.
+      const accessExpired = m.expiry ? Date.parse(m.expiry) < now : false;
       if (accessExpired && daysSinceOk > 2) {
         failing.push(`${account} (last successful refresh ${Math.floor(daysSinceOk)}d ago)`);
       } else if (m.consent_publish_state !== 'production' && daysSinceOk >= 5) {

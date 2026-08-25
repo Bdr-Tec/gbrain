@@ -163,20 +163,36 @@ export function detectThreadLoop(
 }
 
 // Suppression sets are cheap but per-thread queries add up on a backfill;
-// cache per source for one process, refreshed on a 60s TTL.
-const suppressionCache = new Map<string, { set: SuppressionSet; loadedAt: number }>();
+// cache per (engine, source) for one process, refreshed on a 60s TTL. Keyed
+// by engine identity, not sourceId alone — one process serving two brains
+// with a colliding source id must not share mute sets across them.
+const suppressionCache = new WeakMap<
+  BrainEngine,
+  Map<string, { set: SuppressionSet; loadedAt: number; epoch: number }>
+>();
+// A WeakMap can't be cleared wholesale; the epoch exists for the no-arg test
+// seam — a bump makes every cached entry read as expired.
+let suppressionCacheEpoch = 0;
 
 async function suppressionsFor(engine: BrainEngine, sourceId: string): Promise<SuppressionSet> {
-  const hit = suppressionCache.get(sourceId);
-  if (hit && Date.now() - hit.loadedAt < 60_000) return hit.set;
+  let perEngine = suppressionCache.get(engine);
+  if (!perEngine) {
+    perEngine = new Map();
+    suppressionCache.set(engine, perEngine);
+  }
+  const hit = perEngine.get(sourceId);
+  if (hit && hit.epoch === suppressionCacheEpoch && Date.now() - hit.loadedAt < 60_000) {
+    return hit.set;
+  }
   const set = await loadSuppressions(engine, sourceId);
-  suppressionCache.set(sourceId, { set, loadedAt: Date.now() });
+  perEngine.set(sourceId, { set, loadedAt: Date.now(), epoch: suppressionCacheEpoch });
   return set;
 }
 
-/** Test seam: drop the cache between cases. */
-export function __clearSuppressionCacheForTests(): void {
-  suppressionCache.clear();
+/** Test seam: drop the cache between cases (per-engine when provided). */
+export function __clearSuppressionCacheForTests(engine?: BrainEngine): void {
+  if (engine) suppressionCache.delete(engine);
+  else suppressionCacheEpoch++;
 }
 
 /**

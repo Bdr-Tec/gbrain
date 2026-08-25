@@ -39,6 +39,8 @@ interface FetchCall {
 
 let fetchCalls: FetchCall[] = [];
 let userinfoEmail = 'a@example.com';
+/** When set, the fake token endpoint reports this space-delimited GRANTED scope set. */
+let tokenScope: string | undefined;
 
 const realFetch = globalThis.fetch;
 const stdinTtyDesc = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
@@ -55,7 +57,12 @@ const mockFetch = (async (input: string | URL | Request, init?: RequestInit): Pr
   fetchCalls.push({ url, body: typeof init?.body === 'string' ? init.body : '' });
   const u = new URL(url);
   if (u.hostname === 'oauth2.googleapis.com') {
-    return json({ access_token: 'ya29.fresh-access', refresh_token: '1//fresh-refresh', expires_in: 3600 });
+    return json({
+      access_token: 'ya29.fresh-access',
+      refresh_token: '1//fresh-refresh',
+      expires_in: 3600,
+      ...(tokenScope ? { scope: tokenScope } : {}),
+    });
   }
   if (u.hostname === 'openidconnect.googleapis.com') {
     return json({ email: userinfoEmail });
@@ -69,6 +76,7 @@ const mockFetch = (async (input: string | URL | Request, init?: RequestInit): Pr
 beforeEach(() => {
   fetchCalls = [];
   userinfoEmail = 'a@example.com';
+  tokenScope = undefined;
   globalThis.fetch = mockFetch;
   // Deterministic non-TTY: the paste flow must take the two-invocation agent
   // path even when a developer runs bun test from a live terminal.
@@ -359,6 +367,33 @@ describe('runGoogleConnect — two-step paste flow', () => {
       expect(events).toContain('client_creds_ok');
       expect(events).toContain('consent_ok');
       expect(events).not.toContain('connect_error');
+    });
+  });
+
+  test('narrowed grant: the token response `scope` field wins over the requested set in meta.scopes', async () => {
+    const home = freshHome();
+    await withEnv(connectEnv(home), async () => {
+      // Step 1 requests the full default set (no --scopes → all 3 services)...
+      const clientJson = writeClientJsonFile(home);
+      await captured(() => runGoogleConnect(['--client-json', clientJson, '--paste', '--json']));
+      const pending = JSON.parse(readFileSync(pendingPath(home), 'utf-8')) as PendingShape;
+      expect(pending.scopes).toHaveLength(5); // openid + email + gmail/calendar/contacts
+
+      // ...but the user unchecked calendar + contacts on the consent screen.
+      // Google reports the NARROWED grant in the token response's `scope` —
+      // and THAT is what the vault must persist, not the requested set.
+      tokenScope = `openid email ${GMAIL_SCOPE}`;
+      const redirect = `http://127.0.0.1:41999/?code=4%2Fauthcode-test&state=${pending.state}`;
+      const r = await captured(() => runGoogleConnect(['--code', redirect, '--json']));
+      const env = JSON.parse(r.out) as { ok: boolean; status: string; scopes: string[] };
+      expect(env.ok).toBe(true);
+      expect(env.status).toBe('connected');
+      expect(env.scopes).toEqual(['openid', 'email', GMAIL_SCOPE]);
+      expect(r.verdict).toBe(0);
+
+      const entry = readVault(home).credentials['google:a@example.com'];
+      expect(entry).toBeDefined();
+      expect(entry.meta.scopes).toEqual(['openid', 'email', GMAIL_SCOPE]); // exactly the grant
     });
   });
 

@@ -213,6 +213,17 @@ export async function runLoopsExtract(
     throw new Error('loops_extract: model response failed the all-or-nothing parse barrier — retryable');
   }
 
+  // Evidence quotes render as receipts (`> "…"`) on the trusted-local waiting
+  // surface — they must be VERBATIM from the thread the model saw. A
+  // hallucinated or prompt-injected "quote" is dropped (the loop still
+  // lands; fabricated evidence never presents). Whitespace-normalized match:
+  // models legitimately collapse newlines inside a quoted sentence.
+  const wsNorm = (s: string): string => s.replace(/\s+/g, ' ').trim();
+  const haystack = wsNorm(content);
+  const verbatim = (q: string): string => (q && haystack.includes(wsNorm(q)) ? q : '');
+  for (const c of extraction.commitments) c.quote = verbatim(c.quote);
+  for (const d of extraction.decisions_pending) d.quote = verbatim(d.quote);
+
   const loopIds: number[] = [];
   const messageDate = typeof fm.date === 'string' ? fm.date : new Date().toISOString();
 
@@ -263,7 +274,7 @@ export async function runLoopsExtract(
       counterpartySlug,
       counterpartyEmail: c.counterparty_email || null,
       summary: c.text,
-      evidence: [{ page_slug: payload.slug, quote: c.quote }],
+      evidence: [{ page_slug: payload.slug, ...(c.quote ? { quote: c.quote } : {}) }],
       threadId,
       pageSlug: payload.slug,
       dueAt: c.due_iso ? `${c.due_iso}T23:59:59Z` : null,
@@ -281,7 +292,7 @@ export async function runLoopsExtract(
         await engine.addLink( // gbrain-allow-direct-insert: loops-extract writes its own provenance-tagged edges (link_source google-loops); auto-link reconciliation never manages these
           payload.slug,
           counterpartySlug,
-          c.quote.slice(0, 200),
+          (c.quote || c.text).slice(0, 200),
           c.direction === 'owed_by_me' ? 'owes_to' : 'awaiting_reply_from',
           'google-loops',
           undefined,
@@ -301,7 +312,7 @@ export async function runLoopsExtract(
       dedupKey,
       loopType: 'decision_pending',
       summary: d.text,
-      evidence: [{ page_slug: payload.slug, quote: d.quote }],
+      evidence: [{ page_slug: payload.slug, ...(d.quote ? { quote: d.quote } : {}) }],
       threadId,
       pageSlug: payload.slug,
       detector: 'llm_extract',

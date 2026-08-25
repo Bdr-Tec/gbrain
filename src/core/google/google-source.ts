@@ -279,28 +279,41 @@ async function sweepContacts(
   };
   for (const c of result.contacts) {
     if (deps.opts.signal?.aborted) return;
+    // DB lookup by contact id FIRST: deletion tombstones typically carry only
+    // resourceName + deleted (no names/emails — slug derivation yields null),
+    // and a renamed contact's current name derives a DIFFERENT slug than the
+    // page it owns. Both cases need the id-keyed path (mirror of the calendar
+    // sweep's event_id keying).
+    const existingPath = await contactPageRelPathByContactId(deps, c.resourceName);
+    if (c.deleted) {
+      if (existingPath && ownerOf(existingPath) === c.resourceName) {
+        await deletePageByRelPath(deps, existingPath, summary);
+      } else {
+        // Page not (yet) in the DB — fall back to slug candidates, guarded
+        // by file ownership. Delete only the page THIS contact owns.
+        for (const slug of [personSlugFromContact(c, false), personSlugFromContact(c, true)]) {
+          if (slug && ownerOf(`${slug}.md`) === c.resourceName) {
+            await deletePageByRelPath(deps, `${slug}.md`, summary);
+          }
+        }
+      }
+      continue;
+    }
     const baseSlug = personSlugFromContact(c);
     if (!baseSlug) continue;
     const baseOwner = ownerOf(`${baseSlug}.md`);
     const collides = baseOwner !== null && baseOwner !== 'hand-authored' && baseOwner !== c.resourceName;
     const rendered = renderPersonPage(c, collides);
-    if (c.deleted) {
-      // Delete only the page THIS contact owns.
-      for (const candidate of [
-        `${personSlugFromContact(c, false)}.md`,
-        `${personSlugFromContact(c, true)}.md`,
-      ]) {
-        if (candidate && ownerOf(candidate) === c.resourceName) {
-          await deletePageByRelPath(deps, candidate, summary);
-        }
-      }
-      continue;
-    }
     if (!rendered) continue;
     const owner = ownerOf(rendered.relPath);
     if (owner === 'hand-authored') {
       deps.log(`[google] skipping hand-authored ${rendered.relPath}`);
       continue;
+    }
+    // Rename: this contact previously rendered elsewhere — remove the page it
+    // owned there, or the old slug lives on as a stale orphan.
+    if (existingPath && existingPath !== rendered.relPath && ownerOf(existingPath) === c.resourceName) {
+      await deletePageByRelPath(deps, existingPath, summary);
     }
     await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   }
@@ -311,6 +324,25 @@ async function sweepContacts(
 // ── Calendar sweep ───────────────────────────────────────────────────────────
 
 /** Existing calendar page's source_path for an event id, or null. */
+/** Existing person page's source_path for a google contact id, or null. */
+async function contactPageRelPathByContactId(
+  deps: GoogleSyncDeps,
+  resourceName: string,
+): Promise<string | null> {
+  try {
+    const rows = await deps.engine.executeRaw<{ source_path: string | null }>(
+      `SELECT source_path FROM pages
+       WHERE source_id = $1 AND deleted_at IS NULL AND slug LIKE 'people/%'
+         AND frontmatter->>'google_contact_id' = $2
+       LIMIT 1`,
+      [deps.sourceId, resourceName],
+    );
+    return rows[0]?.source_path ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function calendarPageRelPathByEventId(
   deps: GoogleSyncDeps,
   eventId: string,
@@ -400,7 +432,9 @@ async function processThread(
   });
   summary.threadsSeen++;
   const rendered = renderThreadPage(thread);
-  if (!rendered) return thread; // pure noise — detector still sees it for closes
+  // Pure noise renders no page AND skips detection — an all-noise thread
+  // produces an empty verdict anyway, so nothing opens and nothing closes.
+  if (!rendered) return thread;
   const slug = await importRendered(deps, rendered.relPath, rendered.markdown, activePack, summary, countedSlugs);
   await applyLoopDetection(deps, thread, slug);
   // LLM extraction candidates: trickle + the bounded recent window only —
@@ -461,6 +495,16 @@ async function applyLoopDetection(
   }
 }
 
+/** How many consecutive fetch failures before a thread is skipped (poison). */
+const MAX_THREAD_FAILURES = 3;
+
+/**
+ * Returns true when every gmail thread this run either imported or was
+ * deliberately skipped (404-vanished, poison ledger). False = real failures
+ * remain, and the caller must NOT stamp `last_sync_at` — a poison thread
+ * silently wedging the pipeline while the staleness gate reads fresh is the
+ * exact trust failure the gate exists to prevent.
+ */
 async function sweepGmail(
   deps: GoogleSyncDeps,
   gmail: GmailClient,
@@ -469,9 +513,22 @@ async function sweepGmail(
   summary: GoogleSyncSummary,
   countedSlugs: Set<string>,
   progressTick: (note: string) => void,
-): Promise<void> {
+): Promise<boolean> {
   const nowMs = Date.now();
   const cutoffMs = nowMs - deps.cfg.historyDays * 86_400_000;
+  // A --full run retries poisoned threads (fresh ledger); steady-state runs
+  // keep skipping them so one bad thread can't wedge every sync.
+  if (deps.opts.full) state.gmail_fail_counts = {};
+  const failCounts = (state.gmail_fail_counts ??= {});
+  const poisoned = (tid: string): boolean => {
+    if ((failCounts[tid] ?? 0) < MAX_THREAD_FAILURES) return false;
+    deps.log(
+      `[google] thread ${tid} failed ${MAX_THREAD_FAILURES}x; skipping it so the sweep can proceed ` +
+        `(gbrain sync --source ${deps.sourceId} --full retries poisoned threads)`,
+    );
+    progressTick(`thread ${tid} skipped (poison)`);
+    return true;
+  };
 
   // ── Initial (or resumed) backfill ──
   if (!state.gmail_backfill_done) {
@@ -487,7 +544,7 @@ async function sweepGmail(
     }
     let floorMs = state.gmail_backfill_floor_ms ?? nowMs + 60_000;
     for (;;) {
-      if (deps.opts.signal?.aborted) return;
+      if (deps.opts.signal?.aborted) return false;
       const q = `after:${Math.floor(cutoffMs / 1000)} before:${Math.ceil(floorMs / 1000)}`;
       // Page-BOUNDED listing (partialOk): a busy inbox can hold far more ids
       // than the client's 500-page safety cap; an unbounded drain would
@@ -511,9 +568,11 @@ async function sweepGmail(
         const batch = threadIds.slice(i, i + BACKFILL_BATCH_THREADS);
         for (const tid of batch) {
           if (deps.opts.signal?.aborted) break;
+          if (poisoned(tid)) continue;
           try {
             const thread = await processThread(deps, gmail, tid, activePack, summary, countedSlugs);
             processedAny = true;
+            if (failCounts[tid]) delete failCounts[tid];
             const newest = thread?.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
             if (newest > 0 && newest < batchOldest) batchOldest = newest;
             if (newest > (state.gmail_newest_ms ?? 0)) state.gmail_newest_ms = newest;
@@ -527,6 +586,7 @@ async function sweepGmail(
               progressTick(`thread ${tid} gone`);
               continue;
             }
+            failCounts[tid] = (failCounts[tid] ?? 0) + 1;
             batchFailed = true;
             summary.failedFiles++;
             summary.status = 'partial';
@@ -544,11 +604,14 @@ async function sweepGmail(
           writeGoogleState(deps.cfg.dir, state);
         }
       }
-      if (deps.opts.signal?.aborted) return;
+      if (deps.opts.signal?.aborted) return false;
       if (batchFailed) {
         // Leave the floor at the last good batch; the next run re-lists from
-        // there and retries the failed thread first.
-        return;
+        // there and retries the failed thread first. Persist the fail ledger
+        // so repeated failures accumulate toward the poison threshold across
+        // runs, then report the failure — this run did NOT refresh the data.
+        writeGoogleState(deps.cfg.dir, state);
+        return false;
       }
       if (!processedAny || batchOldest >= floorMs) {
         // Nothing moved the floor (all skipped/vanished or all
@@ -566,12 +629,13 @@ async function sweepGmail(
       writeGoogleState(deps.cfg.dir, state);
     } else {
       // Failures stay in the window; the next run retries from the floor.
-      return;
+      writeGoogleState(deps.cfg.dir, state);
+      return false;
     }
   }
 
   // ── Delta lane ──
-  if (!state.gmail_history_id) return;
+  if (!state.gmail_history_id) return true;
   let threadIds: string[];
   let newHistoryId: string | null = null;
   try {
@@ -586,6 +650,12 @@ async function sweepGmail(
     // listing was COMPLETE; a capped partial listing keeps the fallback lane
     // active (gmail_newest_ms advances per processed thread, converging).
     deps.log('[google] historyId expired; falling back to bookmark window');
+    // Anchor BEFORE listing (mirrors the backfill's zero-gap ordering): a
+    // message arriving between these two calls is either in the listing
+    // (post-anchor arrival) or replayed by history.list from the anchor.
+    // Anchoring after the listing would silently drop that message forever.
+    const profile = await gmail.getProfile({ ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
+    const anchorCandidate = profile.historyId;
     const sinceSec = Math.floor(((state.gmail_newest_ms ?? cutoffMs) - 86_400_000) / 1000);
     const FALLBACK_MAX_PAGES = 20;
     const ids = await gmail.listMessageIds(`after:${sinceSec}`, {
@@ -595,16 +665,15 @@ async function sweepGmail(
     });
     threadIds = [...new Set(ids.map((m) => m.threadId))];
     const likelyCapped = ids.length >= FALLBACK_MAX_PAGES * 100;
-    if (!likelyCapped) {
-      const profile = await gmail.getProfile({ ...(deps.opts.signal ? { signal: deps.opts.signal } : {}) });
-      newHistoryId = profile.historyId;
-    }
+    if (!likelyCapped) newHistoryId = anchorCandidate;
   }
   let failed = 0;
   for (const tid of threadIds) {
-    if (deps.opts.signal?.aborted) return;
+    if (deps.opts.signal?.aborted) return false;
+    if (poisoned(tid)) continue;
     try {
       const thread = await processThread(deps, gmail, tid, activePack, summary, countedSlugs);
+      if (failCounts[tid]) delete failCounts[tid];
       const newest = thread?.messages[thread.messages.length - 1]?.internalDateMs ?? 0;
       if (newest > (state.gmail_newest_ms ?? 0)) state.gmail_newest_ms = newest;
       progressTick(`thread ${tid}`);
@@ -618,6 +687,7 @@ async function sweepGmail(
         progressTick(`thread ${tid} gone`);
         continue;
       }
+      failCounts[tid] = (failCounts[tid] ?? 0) + 1;
       failed++;
       summary.failedFiles++;
       summary.status = 'partial';
@@ -629,6 +699,7 @@ async function sweepGmail(
   if (failed === 0 && newHistoryId) {
     state.gmail_history_id = newHistoryId;
   }
+  return failed === 0;
 }
 
 // ── Full reconcile (deletes) ─────────────────────────────────────────────────
@@ -837,9 +908,11 @@ export async function runGoogleSync(
     if (activeServices.includes('gmail')) {
       const stop = startHeartbeat(progress, 'gmail sweep');
       try {
-        await sweepGmail(deps, gmail, state, activePack, summary, countedSlugs, tick);
+        // sweepGmail reports thread-level failures via its return value —
+        // they exit through normal returns, not throws, and stamping
+        // last_sync_at over them would blind the staleness gate (H1).
+        gmailSweepOk = await sweepGmail(deps, gmail, state, activePack, summary, countedSlugs, tick);
         if (opts.full) await reconcileGmailDeletes(deps, gmail, summary);
-        gmailSweepOk = true;
       } catch (e) {
         serviceErrors.push(`gmail: ${e instanceof Error ? e.message : String(e)}`);
         summary.status = 'partial';

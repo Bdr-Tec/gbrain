@@ -132,11 +132,24 @@ describe('applyThreadLoopVerdict', () => {
     // Reply closes it...
     const replied = thread([
       msg({ from: 'carol@example.com', to: ['me@example.com'], ageHours: 48 }),
-      msg({ from: 'me@example.com', to: ['carol@example.com'], ageHours: 1, sent: true, body: 'Done.' }),
+      msg({ from: 'me@example.com', to: ['carol@example.com'], ageHours: 40, sent: true, body: 'Done.' }),
     ]);
     await applyThreadLoopVerdict(engine, 'g1', replied, MY, null, NOW);
-    // ...and the state re-holding reopens THE SAME row (dedup conflict path).
+    // ...a replay carrying NO newer activity must NOT reopen — that's the
+    // manual-close-revert guard (a label-only history touch re-emits the
+    // same spec; reverting a close on it would silently undo `loops done`)...
     await applyThreadLoopVerdict(engine, 'g1', t, MY, null, NOW);
+    const closedRows = await listOpenLoops(engine, { sourceIds: ['g1'], status: 'done' });
+    expect(closedRows).toHaveLength(1);
+    expect(closedRows[0].id).toBe(id);
+    // ...but a NEW inbound (genuinely newer activity, past the 24h grace)
+    // reopens THE SAME row (dedup conflict path).
+    const reAsked = thread([
+      msg({ from: 'carol@example.com', to: ['me@example.com'], ageHours: 48 }),
+      msg({ from: 'me@example.com', to: ['carol@example.com'], ageHours: 40, sent: true, body: 'Done.' }),
+      msg({ from: 'carol@example.com', to: ['me@example.com'], ageHours: 30 }),
+    ]);
+    await applyThreadLoopVerdict(engine, 'g1', reAsked, MY, null, NOW);
     rows = await listOpenLoops(engine, { sourceIds: ['g1'] });
     expect(rows).toHaveLength(1);
     expect(rows[0].id).toBe(id);

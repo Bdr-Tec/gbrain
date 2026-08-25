@@ -34,6 +34,12 @@ export interface GoogleSourceState {
   gmail_backfill_done: boolean;
   /** Bookmark for the history-expired fallback: newest internalDate imported. */
   gmail_newest_ms: number | null;
+  /**
+   * Poison-thread ledger: consecutive fetch failures per thread id. A thread
+   * failing MAX_THREAD_FAILURES times is skipped (loudly) instead of wedging
+   * the backfill floor / delta cursor forever; entries clear on success.
+   */
+  gmail_fail_counts?: Record<string, number>;
   calendar_sync_token: string | null;
   contacts_sync_token: string | null;
   last_full_at: string | null;
