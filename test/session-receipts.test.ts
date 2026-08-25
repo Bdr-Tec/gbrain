@@ -692,3 +692,29 @@ describe('memorable-relay.jsonl is bounded: tail reads + hook-lane trim', () => 
 async function relayFileSizeOver(path: string, bytes: number): Promise<boolean> {
   return statSync(path).size > bytes;
 }
+
+describe('degrade ordering: a stale prior-run relay failure never masks current reasons', () => {
+  test('priorRelayFailure is appended LAST in degradeReasons, and its cause is clamped', async () => {
+    const home = tempHome();
+    try {
+      // Evidence off + a seeded stale failure: current reason must come first.
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE_CONFIG: join(home, 'absent') }, async () => {
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ ts: 't', session_id: 'old', ok: false, reason: '<script>very$bad reason that is far beyond the clamp length limit</script>' }) + '\n');
+        const res = await recordAndRelayReceipt({
+          session_id: 'order-sess',
+          harness: 'claude-code',
+          corpus_path: '/tmp/order.txt',
+          content_hash: 'order-1',
+          turn_count: 1,
+          workspace_root: '/repo',
+          tool_calls_json: '[]',
+          secret_scan_ok: true,
+        });
+        expect(res.degradeReasons[0]).toBe('memorable_not_initialized');
+        expect(res.degradeReasons[1]).toBe('memorable_relay_failed'); // clamped, and last
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});

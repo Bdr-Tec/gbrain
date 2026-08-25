@@ -248,10 +248,16 @@ export interface RelayResult {
 /** The heartbeat reason for the PREVIOUS relay run, or null when it succeeded
  * or never reported. Nothing is waited on here — the answer describes the last
  * run, so a failed relay becomes visible one session later rather than never,
- * and the fire-and-forget contract is untouched. */
+ * and the fire-and-forget contract is untouched.
+ *
+ * The child's `reason` is UNTRUSTED subprocess output landing in a heartbeat
+ * that is counters and reasons [S3#7] — clamp it to the same short
+ * machine-code charset hook.ts's reasonCode() enforces, else 'failed'. */
 export async function priorRelayFailure(): Promise<string | null> {
   const last = await lastRelayResult();
-  return last && !last.ok ? `memorable_relay_${last.reason ?? 'failed'}` : null;
+  if (!last || last.ok) return null;
+  const cause = typeof last.reason === 'string' && /^[A-Za-z0-9_.:-]{1,48}$/.test(last.reason) ? last.reason : 'failed';
+  return `memorable_relay_${cause}`;
 }
 
 /**
@@ -684,14 +690,16 @@ export async function recordAndRelayReceipt(
   opts: { spawnFn?: typeof spawn; trimRelayFile?: boolean } = {},
 ): Promise<RelayReceiptResult> {
   const degradeReasons: string[] = [];
+  let priorFail: string | null = null;
   try {
     if (opts.trimRelayFile) await maybeTrimRelayResults();
     const recorded = await appendSessionReceipt(entry);
     if (!recorded) return { recorded: false, degradeReasons };
     // gbrain verified the binary existed, never that it WORKED — surface the
-    // PREVIOUS run's self-reported outcome (see relayResultsPath).
-    const priorFail = await priorRelayFailure();
-    if (priorFail) degradeReasons.push(priorFail);
+    // PREVIOUS run's self-reported outcome (see relayResultsPath). Collected
+    // here, appended LAST: a stale prior-run failure must never mask a
+    // current-session reason under the heartbeat's first-degrade-wins rule.
+    priorFail = await priorRelayFailure();
     // Consent-before-egress: the receipt above is a local artifact and is
     // always written; the SPAWN is what leads to egress, so it additionally
     // requires positive evidence that Memorable's own consent exists. No
@@ -699,23 +707,24 @@ export async function recordAndRelayReceipt(
     const evidence = memorableConsentEvidence();
     if (!evidence.ok) {
       degradeReasons.push(evidence.reason);
-      return { recorded: true, degradeReasons };
+    } else {
+      // Enabled-but-not-installed is named, not spawned into an ENOENT.
+      const bin = resolveMemorableBin();
+      if (!bin) {
+        degradeReasons.push('memorable_cli_missing');
+      } else {
+        const doSpawn = opts.spawnFn ?? spawn;
+        const child = doSpawn(bin, ['record', '--session', entry.session_id], { detached: true, stdio: 'ignore' });
+        // ENOENT still arrives as an async 'error' event; without this
+        // handler an uncaught one kills the caller.
+        child.on('error', () => { /* best-effort by contract */ });
+        child.unref();
+      }
     }
-    // Enabled-but-not-installed is named, not spawned into an ENOENT.
-    const bin = resolveMemorableBin();
-    if (!bin) {
-      degradeReasons.push('memorable_cli_missing');
-      return { recorded: true, degradeReasons };
-    }
-    const doSpawn = opts.spawnFn ?? spawn;
-    const child = doSpawn(bin, ['record', '--session', entry.session_id], { detached: true, stdio: 'ignore' });
-    // ENOENT still arrives as an async 'error' event; without this handler an
-    // uncaught one kills the caller.
-    child.on('error', () => { /* best-effort by contract */ });
-    child.unref();
   } catch {
     /* spawn refused — the relay is best-effort and never fails the caller */
   }
+  if (priorFail) degradeReasons.push(priorFail);
   return { recorded: true, degradeReasons };
 }
 

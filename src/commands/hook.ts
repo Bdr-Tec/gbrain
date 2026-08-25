@@ -1421,6 +1421,11 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   let sessionId = 'unknown';
   let ws: string | undefined;
   let segmentMode: string | undefined;
+  // Prior-run relay failures (memorable_relay_*) describe a PREVIOUS session.
+  // Under first-degrade-wins they must not mask THIS session's reasons (e.g.
+  // push_unavailable, set later in this function), so they are held here and
+  // applied just before the heartbeat write.
+  const staleRelayReasons: string[] = [];
   try {
     const j = await readStdinJson(io, 500);
     sessionId = sanitizeSessionId(j?.session_id);
@@ -1515,7 +1520,10 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
               tool_calls_json: toolCallsJson,
               secret_scan_ok: redactionsN !== undefined,
             }, { trimRelayFile: true }); // hook lane is the ONE trimmer of memorable-relay.jsonl
-            for (const r of relay.degradeReasons) degrade(r);
+            for (const r of relay.degradeReasons) {
+              if (r.startsWith('memorable_relay_')) staleRelayReasons.push(r);
+              else degrade(r);
+            }
           }
           try {
             rmSync(corpusFile + CORPUS_INGESTED_SUFFIX, { force: true });
@@ -1575,6 +1583,10 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
   } catch {
     /* best effort */
   }
+
+  // Stale relay failures apply LAST — visible when nothing about THIS session
+  // degraded, never masking a current-session reason.
+  for (const r of staleRelayReasons) degrade(r);
 
   await writeHeartbeat(io, {
     ts: new Date().toISOString(),

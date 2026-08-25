@@ -32,6 +32,8 @@ import { zeroTotalContradictionsCheck } from '../core/eval-contradictions/run-he
 // unchanged.
 import { multiSourceDriftAdvice } from './doctor/schema-pack-checks.ts';
 import { bootstrapDoctorChecks } from './doctor/bootstrap-checks.ts';
+import { buildMemorableRelayCheck } from './doctor/checks/integrations-memorable.ts';
+export { buildMemorableRelayCheck } from './doctor/checks/integrations-memorable.ts';
 import {
   skillConformanceCheck,
   skillsManifestIntegrityCheck,
@@ -760,6 +762,12 @@ export async function buildChecks(
   // null. Emits NOTHING on machines with no bootstrap state, so ordinary
   // brains keep a clean doctor.
   checks.push(...(await bootstrapDoctorChecks(engine)));
+
+  // 2e. Memorable relay health — engine-free, file-plane only, so it runs
+  // unconditionally (survives --fast and every --scope). Gate off = one quiet
+  // ok row; the states it exists to catch are enabled-without-disclosure and
+  // enabled-but-never-actually-relaying.
+  checks.push(await buildMemorableRelayCheck());
 
   // 3. Half-migrated Minions detection (filesystem-only).
   // If completed.jsonl has any status:"partial" entry with no later
