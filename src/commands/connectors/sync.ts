@@ -7,6 +7,7 @@
  */
 
 import type { BrainEngine } from '../../core/engine.ts';
+import { setCliExitVerdict } from '../../core/cli-force-exit.ts';
 import { createProgress } from '../../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../../core/cli-options.ts';
 import { runConnectorSync } from '../../core/connectors/sync.ts';
@@ -57,14 +58,14 @@ export async function runConnectorSyncCmd(engine: BrainEngine, args: string[]): 
     providers = connectorProviderNames().filter((p) => loadCredential(p) !== null);
     if (providers.length === 0) {
       console.error('No connector credentials found. Run `gbrain connectors auth <provider>` first.');
-      process.exitCode = 1;
+      setCliExitVerdict(1);
       return;
     }
   } else if (isConnectorProviderName(provider)) {
     providers = [provider];
   } else {
     console.error('Usage: gbrain connectors sync <chatgpt|claude>|--all [--full] [--dry-run] [--limit N]');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 
@@ -95,7 +96,7 @@ export async function runConnectorSyncCmd(engine: BrainEngine, args: string[]): 
     } catch (e) {
       reporter.finish();
       console.error(`connector sync ${p} failed: ${e instanceof Error ? e.message : String(e)}`);
-      process.exitCode = 1;
+      setCliExitVerdict(1);
     }
   }
 

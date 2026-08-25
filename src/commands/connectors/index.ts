@@ -12,6 +12,7 @@
  */
 
 import type { BrainEngine } from '../../core/engine.ts';
+import { setCliExitVerdict } from '../../core/cli-force-exit.ts';
 import { connectorProviders } from '../../core/connectors/registry.ts';
 
 function printHelp(): void {
@@ -80,6 +81,6 @@ export async function runConnectors(engine: BrainEngine, args: string[]): Promis
     default:
       console.error(`Unknown connectors subcommand: ${sub}`);
       printHelp();
-      process.exitCode = 1;
+      setCliExitVerdict(1);
   }
 }

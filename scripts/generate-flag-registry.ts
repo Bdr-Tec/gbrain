@@ -102,6 +102,10 @@ function facadeExpansion(p: string): string[] {
   if (rel === 'src/core/operations.ts') return collect(join(ROOT, 'src/core/ops'));
   if (rel === 'src/commands/doctor.ts') return collect(join(ROOT, 'src/commands/doctor'));
   if (rel === 'src/commands/skillpack.ts') return collect(join(ROOT, 'src/commands/skillpack'));
+  // connectors is a peeled command dir (index.ts dispatches to auth/sync/status);
+  // scan the whole dir at module depth so a safety flag consumed in a subcommand
+  // module (sync.ts: `=== '--dry-run'`) carries its evidence into depth-zero.
+  if (rel === 'src/commands/connectors/index.ts') return collect(join(ROOT, 'src/commands/connectors'));
   if (rel === 'src/commands/sync.ts') {
     // Only the modules PEELED OUT of sync.ts (their text used to live inside
     // it). Pre-existing sync-* siblings were always ordinary deps — sweeping

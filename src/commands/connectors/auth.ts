@@ -9,6 +9,7 @@
  */
 
 import type { BrainEngine } from '../../core/engine.ts';
+import { setCliExitVerdict } from '../../core/cli-force-exit.ts';
 import { ConnectorClient } from '../../core/connectors/client.ts';
 import type { ConnectorFetch } from '../../core/connectors/client.ts';
 import { deleteCredential, saveCredential } from '../../core/connectors/credentials.ts';
@@ -86,7 +87,8 @@ function printFirstRun(provider: string): void {
       `  gbrain connectors sync ${provider} --full         # import everything`,
       '',
       `To keep it synced automatically (opt-in; polls your account on a schedule):`,
-      `  gbrain config set connectors.${provider}.auto_sync true   # then: gbrain autopilot --install`,
+      `  gbrain config set connectors.${provider}.auto_sync true`,
+      `  gbrain autopilot --install`,
     ].join('\n'),
   );
 }
@@ -95,7 +97,7 @@ export async function runConnectorAuth(_engine: BrainEngine, args: string[]): Pr
   const { provider, flags } = parseFlags(args);
   if (!isConnectorProviderName(provider)) {
     console.error(`Usage: gbrain connectors auth <chatgpt|claude> [--cookie -|--token V] [--try-oauth] [--force]`);
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
   const prov = getConnectorProvider(provider)!;
@@ -125,7 +127,7 @@ export async function runConnectorAuth(_engine: BrainEngine, args: string[]): Pr
   }
   if (!cookie && !token) {
     console.error('No credential provided.');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 
@@ -145,7 +147,7 @@ export async function runConnectorAuth(_engine: BrainEngine, args: string[]): Pr
   const ok = await probeAndReport(prov, cred);
   if (!ok && !flags.force) {
     console.error('Credential NOT saved (probe failed). Re-run with --force to save anyway.');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
   saveCredential(cred);
@@ -192,7 +194,7 @@ export async function runConnectorLogout(args: string[]): Promise<void> {
   const provider = args.find((a) => !a.startsWith('-')) ?? '';
   if (!isConnectorProviderName(provider)) {
     console.error('Usage: gbrain connectors logout <chatgpt|claude>');
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
   const removed = deleteCredential(provider);

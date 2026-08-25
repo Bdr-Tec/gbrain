@@ -23,6 +23,11 @@ writes_to:
 
 # chat-connectors — Live account sync of ChatGPT + Claude history
 
+> **Convention:** see [conventions/brain-first.md](../conventions/brain-first.md)
+> — before concluding a conversation is missing (or re-fetching everything),
+> check what the brain already has (`gbrain search`/`query`/`get`); sync is
+> incremental and idempotent precisely so it never re-does settled work.
+>
 > **Convention:** see [_brain-filing-rules.md](../_brain-filing-rules.md) —
 > synced conversations file under `conversations/<provider>/` (the conversation
 > is the artifact; cross-link concepts/people from it).

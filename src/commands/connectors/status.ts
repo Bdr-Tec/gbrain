@@ -7,6 +7,7 @@
  */
 
 import type { BrainEngine } from '../../core/engine.ts';
+import { setCliExitVerdict } from '../../core/cli-force-exit.ts';
 import { connectorProviders, getConnectorProvider } from '../../core/connectors/registry.ts';
 import { credentialMode, resolveCredential } from '../../core/connectors/credentials.ts';
 import {
@@ -25,7 +26,7 @@ export async function runConnectorStatus(engine: BrainEngine, args: string[]): P
     : [...connectorProviders];
   if (only && providers.length === 0) {
     console.error(`Unknown provider: ${only}`);
-    process.exitCode = 1;
+    setCliExitVerdict(1);
     return;
   }
 
