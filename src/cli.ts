@@ -73,6 +73,12 @@ export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgr
   // was shadowed by find_experts' non-hidden cliHints. The op hint is now
   // hidden (ops/insights.ts); this entry makes the richer handler dispatch.
   'whoknows',
+  // Google connector + generic credential vault (engine-free; vault-only).
+  'google',
+  'creds',
+  // Open-loop engine CLI (engine-bound; trusted-local op dispatch).
+  'waiting',
+  'loops',
 // Agent-bootstrap family (ENG-2 three-touchpoint rule): `bootstrap` + `hook`
 // are ENGINE-FREE (dispatched in handleCliOnly before the connectEngine
 // terminator) and must NEVER enter THIN_CLIENT_REFUSED_COMMANDS. `sweep` is
@@ -199,6 +205,11 @@ const CLI_ONLY_SELF_HELP = new Set([
   // engine-free --help is answered by pre-engine branches in handleCliOnly
   // (the sync/capture pattern).
   'eval', 'storage', 'reindex',
+  // v0.47 gmail-loops family: google (HELP in google.ts), creds (HELP in
+  // creds.ts), loops + waiting (usage blocks in loops.ts). All engine-free
+  // or help-before-engine; the generic stub would hide the [SHOW USER]
+  // setup contract agents depend on.
+  'google', 'creds', 'loops', 'waiting',
 ]);
 
 /**
@@ -227,6 +238,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // runCompileContext accepts BrainEngine | null; the help guard runs first.
   'compile-context': async () =>
     (await import('./commands/compile-context.ts')).runCompileContext as never,
+  // runLoops / runWaiting answer --help before touching the engine.
+  loops: async () => (await import('./commands/loops.ts')).runLoops as never,
+  waiting: async () => (await import('./commands/loops.ts')).runWaiting as never,
   // runSources's `--help`/`-h`/undefined-subcommand branch calls printHelp()
   // without ever touching `engine` — safe to dispatch with no brain
   // configured, matching the reader who runs `sources --help` because they
@@ -2035,6 +2049,19 @@ async function handleCliOnly(command: string, args: string[]) {
     await runAuth(args);
     return;
   }
+  // Google connector credential flows (engine-free: vault-only; status
+  // best-effort spawns its own engine for the linked-sources section).
+  if (command === 'google') {
+    const { runGoogle } = await import('./commands/google.ts');
+    await runGoogle(args);
+    return;
+  }
+  // Generic credential vault surface (engine-free).
+  if (command === 'creds') {
+    const { runCreds } = await import('./commands/creds.ts');
+    await runCreds(args);
+    return;
+  }
   if (command === 'remote') {
     // Multi-topology v1 (Tier B): thin-client-only convenience commands.
     // `runRemote` self-checks for remote_mcp config and exits 1 if local-only.
@@ -3167,6 +3194,17 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'sources': {
         const { runSources } = await import('./commands/sources.ts');
         await runSources(engine, args);
+        break;
+      }
+      case 'waiting': {
+        // v0.47 open-loop engine: the killer output (who is waiting on you).
+        const { runWaiting } = await import('./commands/loops.ts');
+        await runWaiting(engine, args);
+        break;
+      }
+      case 'loops': {
+        const { runLoops } = await import('./commands/loops.ts');
+        await runLoops(engine, args);
         break;
       }
       case 'pages': {

@@ -1,0 +1,371 @@
+/**
+ * loops ops — the open-loop engine's read/write surface.
+ *
+ *   open_loops  (read)  — the killer output: who is waiting on you, what you
+ *                         promised, and the context needed to respond.
+ *   loops_close (write) — mark a loop done/dropped.
+ *   loops_mute  (write) — suppress a sender/thread from future detection.
+ *
+ * Remote posture (approved D4-A): open_loops is NOT localOnly — hosted
+ * gbrain.io serves it over HTTP to its authenticated owner. Fail-closed
+ * evidence redaction instead: `ctx.remote !== false` gets counts +
+ * counterparty + summary + due; verbatim quotes, Gmail deep links, and the
+ * injectable text block are trusted-local only.
+ *
+ * Trust-critical freshness (outside-voice F2): the result carries the google
+ * sources' last-successful-sync ages and a `stale` flag — stale-but-confident
+ * "you owe Alice a reply" is worse than no output, so the CLI refuses on
+ * stale unless --stale-ok.
+ */
+
+import type { Operation, OperationContext } from './contract.ts';
+import { sourceScopeOpts } from './context.ts';
+import { validateSourceId } from '../utils.ts';
+import {
+  addSuppression,
+  closeOpenLoop,
+  listOpenLoops,
+  type LoopStatus,
+  type LoopType,
+  type OpenLoopRow,
+} from '../loops/loops-store.ts';
+
+const STALE_AFTER_MS = 24 * 3_600_000;
+
+interface GoogleSourceFreshness {
+  id: string;
+  last_sync_at: string | null;
+  stale: boolean;
+}
+
+async function googleSourceFreshness(
+  ctx: OperationContext,
+): Promise<{ sources: GoogleSourceFreshness[]; stale: boolean }> {
+  try {
+    const rows = await ctx.engine.executeRaw<{ id: string; last_sync_at: string | null; config: unknown }>(
+      `SELECT id, last_sync_at, config FROM sources WHERE archived IS NOT TRUE`,
+      [],
+    );
+    const scope = sourceScopeOpts(ctx);
+    const sources = rows
+      .filter((r) => {
+        const c =
+          typeof r.config === 'string'
+            ? (JSON.parse(r.config) as Record<string, unknown>)
+            : ((r.config ?? {}) as Record<string, unknown>);
+        if (c.kind !== 'google') return false;
+        if (scope.sourceIds && !scope.sourceIds.includes(r.id)) return false;
+        if (scope.sourceId && scope.sourceId !== r.id) return false;
+        return true;
+      })
+      .map((r) => ({
+        id: r.id,
+        last_sync_at: r.last_sync_at,
+        stale:
+          r.last_sync_at === null || Date.now() - Date.parse(r.last_sync_at) > STALE_AFTER_MS,
+      }));
+    return { sources, stale: sources.length > 0 && sources.every((s) => s.stale) };
+  } catch {
+    return { sources: [], stale: false };
+  }
+}
+
+/** Regenerate Gmail deep links (code, never stored LLM text) for evidence. */
+async function deepLinksFor(
+  ctx: OperationContext,
+  loops: OpenLoopRow[],
+): Promise<Map<string, string>> {
+  // account lives in the thread page's frontmatter; batch one query.
+  const slugs = [...new Set(loops.map((l) => l.page_slug).filter((s): s is string => s !== null))];
+  const accounts = new Map<string, string>();
+  if (slugs.length > 0) {
+    try {
+      const rows = await ctx.engine.executeRaw<{ slug: string; account: string | null; source_id: string }>(
+        `SELECT slug, source_id, frontmatter->>'account' AS account FROM pages
+         WHERE slug = ANY(string_to_array($1, E'\\n')) AND deleted_at IS NULL`,
+        [slugs.join('\n')],
+      );
+      for (const r of rows) if (r.account) accounts.set(`${r.source_id}:${r.slug}`, r.account);
+    } catch { /* links degrade to none */ }
+  }
+  const out = new Map<string, string>();
+  const { emailCitation } = await import('../output/scaffold.ts');
+  for (const l of loops) {
+    const account = l.page_slug ? accounts.get(`${l.source_id}:${l.page_slug}`) : undefined;
+    const messageId = l.evidence.find((e) => e.message_id)?.message_id;
+    if (!account || !messageId) continue;
+    try {
+      out.set(
+        `${l.id}`,
+        emailCitation({
+          account,
+          messageId,
+          subject: l.summary.slice(0, 80),
+          dateISO: l.last_activity_at.slice(0, 10),
+        }),
+      );
+    } catch { /* invalid message id — no link */ }
+  }
+  return out;
+}
+
+interface LoopView {
+  id: number;
+  loop_type: LoopType;
+  summary: string;
+  due_at: string | null;
+  opened_at: string;
+  last_activity_at: string;
+  counterparty_slug: string | null;
+  counterparty_email: string | null;
+  detector: string;
+  confidence: number;
+  page_slug: string | null;
+  /** Trusted-local only. */
+  quote?: string;
+  deep_link?: string;
+}
+
+function loopView(l: OpenLoopRow, trusted: boolean, deepLinks: Map<string, string>): LoopView {
+  const base: LoopView = {
+    id: l.id,
+    loop_type: l.loop_type,
+    summary: l.summary,
+    due_at: l.due_at,
+    opened_at: l.opened_at,
+    last_activity_at: l.last_activity_at,
+    counterparty_slug: l.counterparty_slug,
+    counterparty_email: l.counterparty_email,
+    detector: l.detector,
+    confidence: l.confidence,
+    page_slug: l.page_slug,
+  };
+  if (trusted) {
+    const q = l.evidence.find((e) => e.quote)?.quote;
+    if (q) base.quote = q;
+    const link = deepLinks.get(`${l.id}`);
+    if (link) base.deep_link = link;
+  }
+  return base;
+}
+
+interface CounterpartyGroup {
+  counterparty: string;
+  counterparty_slug: string | null;
+  counterparty_email: string | null;
+  loop_count: number;
+  oldest_opened_at: string;
+  nearest_due_at: string | null;
+  loops: LoopView[];
+  context?: unknown;
+}
+
+function rankGroups(groups: CounterpartyGroup[], backlinks: Map<string, number>): CounterpartyGroup[] {
+  const score = (g: CounterpartyGroup): number => {
+    let s = g.loop_count * 10;
+    if (g.nearest_due_at) {
+      const days = (Date.parse(g.nearest_due_at) - Date.now()) / 86_400_000;
+      s += days <= 0 ? 50 : days <= 3 ? 30 : days <= 7 ? 15 : 5;
+    }
+    const ageDays = (Date.now() - Date.parse(g.oldest_opened_at)) / 86_400_000;
+    s += Math.min(20, ageDays);
+    if (g.counterparty_slug) s += Math.min(20, backlinks.get(g.counterparty_slug) ?? 0);
+    return s;
+  };
+  return [...groups].sort((a, b) => score(b) - score(a) || a.counterparty.localeCompare(b.counterparty));
+}
+
+function renderText(groups: CounterpartyGroup[], stale: boolean): string {
+  const lines: string[] = [];
+  if (stale) lines.push('⚠ google sources have not synced recently — this may be out of date.');
+  if (groups.length === 0) {
+    lines.push('No open loops — no unanswered threads older than 24h and no tracked promises. You are clean.');
+    return lines.join('\n');
+  }
+  lines.push(`${groups.length} ${groups.length === 1 ? 'person is' : 'people are'} waiting on you:`);
+  for (const g of groups) {
+    lines.push('', `## ${g.counterparty} (${g.loop_count} open)`);
+    for (const l of g.loops) {
+      const due = l.due_at ? ` — due ${l.due_at.slice(0, 10)}` : '';
+      lines.push(`- [${l.loop_type}] ${l.summary}${due}`);
+      if (l.quote) lines.push(`  > "${l.quote}"`);
+      if (l.deep_link) lines.push(`  ${l.deep_link}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+const open_loops: Operation = {
+  name: 'open_loops',
+  description:
+    'The open-loop engine\'s killer output: who is waiting on you, what you promised, and the context ' +
+    'needed to respond. Grouped by counterparty (default, ranked) or flat. Loops come from the ' +
+    'deterministic Gmail thread-state detector and the LLM commitment extractor. Remote callers get ' +
+    'redacted evidence (no verbatim quotes); trusted local callers also get quotes, Gmail deep links, ' +
+    'entity-card context, and a pre-rendered text digest. Carries google-source freshness (stale flag).',
+  params: {
+    group_by: { type: 'string', enum: ['counterparty', 'none'], description: "Default 'counterparty' (ranked groups)." },
+    status: { type: 'string', enum: ['open', 'done', 'dropped', 'stale'], description: "Default 'open'." },
+    loop_type: { type: 'string', enum: ['commitment_owed_by_me', 'commitment_owed_to_me', 'unanswered_inbound', 'unanswered_outbound', 'decision_pending'], description: 'Filter to one loop type.' },
+    counterparty: { type: 'string', description: 'Filter to one counterparty (slug or email).' },
+    limit: { type: 'number', description: 'Grouped: max groups (default 3). Flat: max loops (default 50).' },
+    include_context: { type: 'boolean', description: 'Attach the counterparty entity card per group (trusted local only). Default true.' },
+  },
+  scope: 'read',
+  annotations: { readOnlyHint: true },
+  handler: async (ctx, p) => {
+    const trusted = ctx.remote === false;
+    const groupBy = (p.group_by as string | undefined) ?? 'counterparty';
+    const status = ((p.status as string | undefined) ?? 'open') as LoopStatus;
+    const scope = sourceScopeOpts(ctx);
+    const loops = await listOpenLoops(ctx.engine, {
+      ...(scope.sourceIds ? { sourceIds: scope.sourceIds } : {}),
+      ...(scope.sourceId ? { sourceIds: [scope.sourceId] } : {}),
+      status,
+      ...(p.loop_type ? { loopType: p.loop_type as LoopType } : {}),
+      ...(p.counterparty ? { counterparty: p.counterparty as string } : {}),
+      limit: 500,
+    });
+    const freshness = await googleSourceFreshness(ctx);
+    const deepLinks = trusted ? await deepLinksFor(ctx, loops) : new Map<string, string>();
+
+    if (groupBy === 'none') {
+      const limit = Math.min(Math.max((p.limit as number | undefined) ?? 50, 1), 500);
+      return {
+        loops: loops.slice(0, limit).map((l) => loopView(l, trusted, deepLinks)),
+        count: loops.length,
+        stale: freshness.stale,
+        sources: freshness.sources,
+        redacted: !trusted,
+      };
+    }
+
+    const byKey = new Map<string, CounterpartyGroup>();
+    for (const l of loops) {
+      const key = l.counterparty_slug ?? l.counterparty_email ?? 'unknown';
+      let g = byKey.get(key);
+      if (!g) {
+        g = {
+          counterparty: key,
+          counterparty_slug: l.counterparty_slug,
+          counterparty_email: l.counterparty_email,
+          loop_count: 0,
+          oldest_opened_at: l.opened_at,
+          nearest_due_at: null,
+          loops: [],
+        };
+        byKey.set(key, g);
+      }
+      g.loop_count++;
+      if (l.opened_at < g.oldest_opened_at) g.oldest_opened_at = l.opened_at;
+      if (l.due_at && (!g.nearest_due_at || l.due_at < g.nearest_due_at)) g.nearest_due_at = l.due_at;
+      g.loops.push(loopView(l, trusted, deepLinks));
+    }
+
+    let backlinks = new Map<string, number>();
+    try {
+      const slugs = [...byKey.values()]
+        .map((g) => g.counterparty_slug)
+        .filter((s): s is string => s !== null);
+      if (slugs.length > 0) backlinks = await ctx.engine.getBacklinkCounts(slugs);
+    } catch { /* rank without backlinks */ }
+
+    const limit = Math.min(Math.max((p.limit as number | undefined) ?? 3, 1), 50);
+    const groups = rankGroups([...byKey.values()], backlinks).slice(0, limit);
+
+    // Entity-card context (zero-LLM, trusted local only).
+    if (trusted && (p.include_context as boolean | undefined) !== false) {
+      const { buildEntityCard } = await import('../verbs/entity-card.ts');
+      for (const g of groups) {
+        if (!g.counterparty_slug) continue;
+        try {
+          const sourceId = scope.sourceId ?? scope.sourceIds?.[0] ?? ctx.sourceId ?? 'default';
+          const card = await buildEntityCard(ctx.engine, sourceId, g.counterparty_slug, { remote: false });
+          if (card.found) g.context = card.card;
+        } catch { /* context is best-effort */ }
+      }
+    }
+
+    return {
+      groups,
+      count: loops.length,
+      stale: freshness.stale,
+      sources: freshness.sources,
+      redacted: !trusted,
+      ...(trusted ? { text: renderText(groups, freshness.stale) } : {}),
+    };
+  },
+};
+
+const loops_close: Operation = {
+  name: 'loops_close',
+  description:
+    "Close an open loop by id: status 'done' (handled) or 'dropped' (not going to). Closing is a state " +
+    'transition with an audit trail, never a delete. Thread loops also close automatically when a reply lands.',
+  params: {
+    id: { type: 'number', required: true, description: 'Loop id (from open_loops).' },
+    status: { type: 'string', required: true, enum: ['done', 'dropped'], description: 'Terminal state.' },
+    note: { type: 'string', description: 'Optional closed_by note (default: manual).' },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    const scope = sourceScopeOpts(ctx);
+    // Remote callers stay inside their granted source scope; trusted local
+    // closes across sources (null = unscoped).
+    let sourceId: string | null = null;
+    if (ctx.remote !== false) {
+      sourceId = scope.sourceId ?? (scope.sourceIds && scope.sourceIds.length === 1 ? scope.sourceIds[0] : null);
+      if (!sourceId) {
+        return { closed: false, reason: 'permission_denied: remote loops_close requires a single-source scope' };
+      }
+    }
+    if (ctx.dryRun) return { dry_run: true, action: 'loops_close', id: p.id, status: p.status };
+    const row = await closeOpenLoop(
+      ctx.engine,
+      sourceId,
+      p.id as number,
+      p.status as 'done' | 'dropped',
+      (p.note as string | undefined)?.slice(0, 200) || 'manual',
+    );
+    if (!row) return { closed: false, reason: 'not_found_or_already_closed' };
+    // A closed commitment loop expires its projected fact so entity cards
+    // stop carrying it (fence round-trip happens on the next facts sweep).
+    if (row.fact_id !== null) {
+      try {
+        await ctx.engine.executeRaw(
+          `UPDATE facts SET expired_at = now() WHERE id = $1 AND expired_at IS NULL`,
+          [row.fact_id],
+        );
+      } catch { /* best-effort */ }
+    }
+    return { closed: true, id: row.id, status: row.status, fact_expired: row.fact_id !== null };
+  },
+};
+
+const loops_mute: Operation = {
+  name: 'loops_mute',
+  description:
+    'Suppress a sender (email address) or thread id from opening NEW loops — the detector feedback ' +
+    'primitive behind "never track this sender". Existing loops keep their state.',
+  params: {
+    kind: { type: 'string', required: true, enum: ['sender', 'thread'], description: 'What to mute.' },
+    value: { type: 'string', required: true, description: 'The sender email or Gmail thread id.' },
+    source_id: { type: 'string', description: 'Google source to scope the mute to (default: routed source).' },
+  },
+  mutating: true,
+  scope: 'write',
+  handler: async (ctx, p) => {
+    const sourceId = (p.source_id as string | undefined) ?? ctx.sourceId ?? 'default';
+    validateSourceId(sourceId);
+    const scope = sourceScopeOpts(ctx);
+    if (ctx.remote !== false && scope.sourceIds && !scope.sourceIds.includes(sourceId)) {
+      return { muted: false, reason: 'permission_denied: source outside caller scope' };
+    }
+    if (ctx.dryRun) return { dry_run: true, action: 'loops_mute', kind: p.kind, value: p.value };
+    await addSuppression(ctx.engine, sourceId, p.kind as 'sender' | 'thread', p.value as string);
+    return { muted: true, kind: p.kind, value: (p.value as string).toLowerCase(), source_id: sourceId };
+  },
+};
+
+export const loopsOperations: Operation[] = [open_loops, loops_close, loops_mute];

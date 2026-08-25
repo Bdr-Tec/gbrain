@@ -4005,6 +4005,14 @@ export async function buildChecks(
     // #2194 fix #5 — autopilot fan-out vs worker concurrency mismatch.
     progress.heartbeat('autopilot_fanout_concurrency');
     checks.push(await computeAutopilotFanoutConcurrencyCheck(engine));
+    // v0.47 google connector: credential-vault health incl. the day-6
+    // Testing-mode expiry warning (zero-network; live probes live in
+    // `gbrain google status`).
+    progress.heartbeat('google_oauth');
+    {
+      const { computeGoogleOauthCheck } = await import('./doctor/checks/google-oauth.ts');
+      checks.push(await computeGoogleOauthCheck());
+    }
     // v0.40.4 graph_signals_coverage — global inbound-link density when
     // graph_signals is enabled in the active mode bundle.
     progress.heartbeat('graph_signals_coverage');
