@@ -61,7 +61,7 @@ export function normalizeLocalResult(rawResult: unknown): unknown {
 }
 
 // CLI-only commands that bypass the operation layer
-export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'skillopt', 'quarantine', 'self-upgrade', 'protocol', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill',
+export const CLI_ONLY = new Set(['init', 'reinit-pglite', 'pglite-repair', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'extract-conversation-facts', 'enrich', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'maintain', 'sources', 'mounts', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test', 'providers', 'storage', 'repos', 'code-def', 'code-refs', 'reindex', 'reindex-code', 'reindex-frontmatter', 'code-callers', 'code-callees', 'reconcile-links', 'frontmatter', 'auth', 'friction', 'claw-test', 'book-mirror', 'takes', 'think', 'salience', 'anomalies', 'calibration', 'transcripts', 'models', 'remote', 'recall', 'forget', 'edges-backfill', 'cache', 'ze-switch', 'retrieval-upgrade', 'founder', 'brainstorm', 'lsd', 'schema', 'capture', 'onboard', 'conversation-parser', 'status', 'connect', 'connectors', 'skillopt', 'quarantine', 'self-upgrade', 'protocol', 'advisor', 'watch', 'reindex-search-vector', 'pages', 'bench', 'backfill',
   // v0.42.58 (#2035 class, caught by the handleCliOnly reachability sweep):
   // full handler at `case 'notability-eval'` but never dispatchable.
   'notability-eval',
@@ -103,6 +103,9 @@ const CLI_ONLY_SELF_HELP = new Set([
   'models',
   'cache',
   'brainstorm', 'lsd',
+  // connectors ships its own printHelp (commands/connectors/index.ts) with the
+  // per-subcommand usage; keep the generic short-circuit from hiding it.
+  'connectors',
   // v0.41.20.0 skillopt's detailed HELP constant lives in
   // src/core/skillopt/help.ts; --help routes there via the dispatcher.
   'skillopt',
@@ -232,6 +235,9 @@ const SELF_HELP_WITHOUT_ENGINE: Record<string, () => Promise<(engine: never, arg
   // configured, matching the reader who runs `sources --help` because they
   // have no brain yet.
   sources: async () => (await import('./commands/sources.ts')).runSources as never,
+  // runConnectors's --help / no-subcommand / `providers` / `logout` branches
+  // never touch `engine` — safe engine-free for the reader with no brain yet.
+  connectors: async () => (await import('./commands/connectors/index.ts')).runConnectors as never,
   // runAgent accepts BrainEngine | null; help (incl. `register --help`) is
   // answered before any engine or job-queue work (cathedral-6).
   agent: async () => (await import('./commands/agent.ts')).runAgent as never,
@@ -1892,6 +1898,7 @@ const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
   storage: 'storage operates on the local repo on disk. Run on the host.',
   takes: 'takes list/search/scorecard/calibration + add/update/resolve/supersede route to the brain host automatically (takes_* MCP ops). This subcommand (extract/revisit) is host-bound: run it on the host machine.',
   sources: 'sources commands manage local DB + config rows. Per-subcommand thin-client routing lands in v0.31.x. For now: use `sources_list` / `sources_status` MCP tools, or run on the host.',
+  connectors: 'connectors manage provider session credentials in ~/.gbrain/connectors and sync your chat history on the host. Credentials never cross the wire — run on the host machine.',
   sweep: 'sweep runs the serve-resident maintenance passes against the LOCAL engine. Run it on the host (the serve process also runs it automatically).',
   'compile-context': 'compile-context compiles from the local brain; run it on the host install.',
   // v0.32 audit additions
@@ -3167,6 +3174,11 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'sources': {
         const { runSources } = await import('./commands/sources.ts');
         await runSources(engine, args);
+        break;
+      }
+      case 'connectors': {
+        const { runConnectors } = await import('./commands/connectors/index.ts');
+        await runConnectors(engine, args);
         break;
       }
       case 'pages': {

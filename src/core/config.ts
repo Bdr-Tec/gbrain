@@ -1360,6 +1360,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   //   parser; numeric 0 disables.
   'minions.',
   'pace.',              // pace.mode + PACE_MODE_CONFIG_KEYS (src/core/pace-mode.ts)
+  'connectors.',        // chat-connectors: source_id, sync_floor_min, embed_kickoff_min_pages, doctor_stale_hours, <provider>.{auto_sync,last_sync_at,auth_error_at,watermark_iso} (no secrets — creds are file-plane)
 ];
 
 /**
