@@ -2,6 +2,70 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.29.0] - 2026-08-24
+
+The community wave: 38 contributor PRs landed (37 authors credited below) plus
+49 more verified issue fixes — everything filed or rebased since the megawave,
+re-trialed against it, and integrated with the same reproduce-first discipline.
+
+### Privacy & data integrity
+- **Remote write-backs can no longer drop invisible fence rows.** A remote
+  caller that reads a page (seeing only world-visible facts), edits prose, and
+  writes back now gets a row-level visibility-aware merge: rows it couldn't
+  see are restored at their stable row numbers; its own edits and deletions of
+  visible rows are honored exactly. Covers timeline-embedded fences too, and
+  forgotten/struck claims round-trip without resurrection (#4548 #4554 #4546,
+  extending community warn-work from #4553/#4555/#4547 — thank you).
+- Ambient-recall deltas honor page visibility for remote callers (#4549 via
+  community PR #4550); timeline fences are stripped from remote page reads
+  (#4546 via #4547).
+- Per-call salience/recency modes and intent-pattern config now fold into the
+  query-cache key (knobs v=26; also folds the keyword-fallback knob and closes
+  a negative-offset cache gap from community PRs #3617/#4414) — one-time
+  cache re-warm on upgrade.
+- WSL transcript-path translation confines strictly to the known Claude config
+  tree (#4522), and hook transcripts translate Windows drive paths at all.
+
+### Community wave (38 PRs, landed with credit)
+Highlights: doctor schema-column drift detection (#4425) and wedged-queue
+worker-liveness split (#4400); sync working-tree drift visibility with
+`--working-tree` (#3974); parallel source-resolution for large repos (#4411);
+PGLite embed-backfill admission gate with typed drain outcomes (#4512);
+openrouter Anthropic-route subagent loops (#4514, also fixing the replay
+matrix); UTF-16-safe truncation in extract paths (#4529); CJK cross-modal
+recall (#4538); bench metric correctness (#4453); a new opt-in third-party
+reranker recipe (nan.builders, #4491 — off unless you configure a key); plus
+25 more fixes across doctor, search, sync, schema, gateway, and CLI surfaces.
+
+### Verified issue fixes (49)
+- Cycle: extractor input/output/pacing config caps (#4540), drain errors
+  surfaced (#4539), atoms truncation UTF-16-safe (#4528 with #4529).
+- Sync/import: YAML-error files named with a validate hint (#4543), leading
+  blank line before frontmatter tolerated (#4526), break-lock resolves the
+  ambient source chain (#4412 — the under-serve e2e defect), image imports
+  incremental (#4521).
+- Doctor: orphans definition unified with health's islanded semantics
+  (#4524, `mode:'inbound'` for the legacy view), upgrade-error warns
+  auto-resolve when provably superseded but fail closed otherwise (#4517),
+  schema ledger can't mask missing columns (#4421 with #4425).
+- MCP/ops: OAuth refresh maps to invalid_grant instead of 500 (#4532),
+  remote put_page documents unreconciled wikilinks (#4525), migrate-engine
+  preserves timestamps and reports real removal counts (#4527).
+- CLI: `--explain` reaches extract/whoknows/onboard instead of being
+  swallowed globally (#4541), zero-meeting extractions warn instead of
+  silently succeeding (#4542).
+- Plus 30 more across think, dream, takes, transcripts, jobs, search,
+  schema-packs, embedding limits (#4530), and test infrastructure.
+
+### To take advantage of v0.46.29.0
+```bash
+gbrain upgrade
+gbrain migrate        # v141 (extract-rollup expected-limit config)
+gbrain doctor         # new drift + liveness checks run automatically
+```
+First queries re-warm the semantic cache (knobs v=26). Code chunks re-chunk
+once on upgrade (CHUNKER_VERSION 6) for decorated-def support.
+
 ## [0.46.28.0] - 2026-08-21
 
 The megawave: 111 verified issues fixed in one release — every remaining
