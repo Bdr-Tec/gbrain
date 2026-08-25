@@ -333,6 +333,19 @@ export function codexConfigPath(): string {
 }
 
 /**
+ * Codex rollout store — (CODEX_HOME || ~/.codex)/sessions/YYYY/MM/DD/
+ * rollout-*.jsonl (same CODEX_HOME resolution discipline as codexConfigPath;
+ * the spawner of a codex hook IS codex, which owns that env). This is the
+ * confinement root for the codex hook lane's transcript_path [S3#8] and the
+ * base of its discovery fallback — pinned here, never widenable by the
+ * process that spawned the hook.
+ */
+export function codexSessionsDir(): string {
+  const codexHome = process.env.CODEX_HOME?.trim();
+  return join(codexHome || join(homedir(), '.codex'), 'sessions');
+}
+
+/**
  * Whether gbrain WIRES codex hooks. False = not yet: codex 0.147.0 ships a
  * real hook system (hooks.json; PreToolUse…SessionEnd — see the TARGETS
  * note), but gbrain's codex hook lane is a filed follow-up; per-turn context
