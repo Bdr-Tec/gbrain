@@ -8,11 +8,16 @@ description: |
   interactions), the daily `gbrain waiting` digest, loop closing/muting, and
   troubleshooting via the typed error catalog.
 triggers:
-  - connect gmail / google / calendar / contacts
-  - who is waiting on me
-  - what do I owe people / open loops / unanswered emails
-  - set up email ingestion
-  - gbrain waiting
+  - "connect gmail"
+  - "connect google"
+  - "connect calendar"
+  - "connect contacts"
+  - "who is waiting on me"
+  - "what do I owe people"
+  - "open loops"
+  - "unanswered email"
+  - "set up email ingestion"
+  - "gbrain waiting"
 tools:
   - open_loops
   - loops_close
@@ -124,3 +129,37 @@ Commitment extraction sends recent email text (≤30 days, ≤50 threads/sweep)
 to the configured chat provider. Tell the user once during setup; the off
 switch is `gbrain config set loops.extraction_enabled false`. The
 unanswered-thread detector is free and unaffected.
+
+## Output Format
+
+When relaying `gbrain waiting`, present per counterparty, most urgent first:
+
+```
+## <Counterparty> (<N> open)
+- [<loop_type>] <what's owed> (<age>) — due <date if any>
+  > "<evidence quote>"
+  <Gmail deep link>
+```
+
+The trusted-local `--json` result already carries this as a paste-ready
+`text` field — prefer relaying it over re-rendering. For setup commands,
+relay `[SHOW USER]` blocks verbatim and `error.problem` + `error.fix` on
+failures; never dump raw JSON envelopes at the user.
+
+## Anti-Patterns
+
+- **Paraphrasing a `[SHOW USER]` block.** The checklists carry load-bearing
+  detail ("Desktop app, NOT Web application", the test-user step). Relay
+  verbatim, one message per block.
+- **Asking the user for client_id/client_secret as chat text.** Take the
+  downloaded JSON as a 0600 file (`--client-json <path>`) or env vars;
+  secrets in argv/chat are the last resort, never the default.
+- **Answering "who is waiting on me" from `query`/`search`.** The open-loop
+  record is `open_loops` / `gbrain waiting` — search results have no
+  loop-state semantics and will happily surface answered threads.
+- **Bypassing the staleness refusal with `--stale-ok` silently.** Run the
+  named `gbrain sync --source <id>` first; only pass `--stale-ok` when the
+  user explicitly accepts possibly-outdated loops.
+- **Marking loops done for the user.** Close (`gbrain loops done <id>`) only
+  after the user says it's handled; thread loops self-close on the next sync
+  when the reply is visible in Gmail.
