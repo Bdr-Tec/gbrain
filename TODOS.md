@@ -7006,15 +7006,47 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   `CREATE UNIQUE INDEX ... ON access_tokens (name) WHERE revoked_at IS NULL` would
   make names honest for humans too. Needs a dedup pass first on brains that already
   carry twins. **Start:** `src/core/migrate.ts` (CONCURRENTLY + `transaction: false`).
-- [ ] **P2 — codex hook lane.** codex-cli 0.147.0 ships a real hook system (hooks.json;
-  PreToolUse…SessionEnd — recorded on `TARGETS['codex-2026-08']` in
-  `src/core/bootstrap/host-specs.ts`), falsifying the old "codex has no hooks" premise.
-  Wiring SessionEnd transcript capture (+ SessionStart context) would give codex
-  sessions the same memory loop Claude Code gets, and supersedes the FF2 notify-sweeper
-  idea. Needs its own dated spec-target verification (payload shapes, deny-unknown-fields
-  config) + e2e before any writer lands. **Trigger:** first user asking why codex
-  sessions don't persist; **Start:** `host-specs.ts` TARGETS + a codex sibling of
-  `writeClaudeHooksAt`.
+- [x] **P2 — codex hook lane.** DONE (Memorable wave): SessionEnd capture landed —
+  `src/core/bootstrap/codex-hooks.ts` (trust-gated two-file writer, verified spec
+  target 2026-08-25) + `src/core/transcripts/codex-hook-lane.ts` + the capture-spec
+  dispatch in hook.ts. SessionStart context on codex remains open (below).
+- [ ] **P3 — codex SessionStart context lane.** The SessionEnd capture lane landed;
+  a SessionStart greeting/context injection lane would close the loop (same
+  trust-gated hooks.json mechanics, `CODEX_HOOK_EVENTS` gains 'SessionStart').
+  **Start:** `src/core/bootstrap/codex-hooks.ts` (writer already generalizes),
+  `src/commands/hook.ts` session-start branch. Filed from the Memorable wave
+  (v0.46.30.0-era, 2026-08-25).
+- [ ] **P1 — OpenClaw tool-call ARGS capture (Memorable value gate).** The openclaw
+  lane ships name-only tool calls (`input: null` — the args field is unobserved in
+  OpenClaw's session format), and Memorable's extraction API REFUSES name-only traces
+  as `no_decisive_steps` (verified live with a synthetic ingest 2026-08-25): openclaw
+  relays are currently rejected politely. One observation run against a real
+  `~/.openclaw/agents/<agent>/sessions/*.jsonl` store must characterize the toolCall
+  args field (+ any result block), then extend `mapOpenclawLine` — the interface
+  (`ToolCallRecord`) is already final, so enrichment is additive. Until then the
+  openclaw lane is plumbing-correct but value-dry. **Start:**
+  `src/core/transcripts/openclaw.ts` (OPENCLAW_SPEC_TARGET note carries the checklist).
+  Filed from the Memorable wave (2026-08-25).
+- [ ] **P3 — native opencode capture lane.** opencode has no characterized session
+  store, no transcript adapter, no discovery root — it rides `HookIo.harness` as a
+  channel label only, and `captureSpecFor('opencode')` deliberately resolves to the
+  claude spec (documented). A native lane needs an observation run against opencode
+  1.18.18 (session store location + format), a new adapter, and a plugin/event-system
+  integration (in-process JS, not a `gbrain hook` subprocess — raises the engine-free
+  question). Until then: `memorable ingest -` is the documented path. **Start:**
+  `docs/mcp/OPENCODE-CLI-PIN.md` + an observation run. Filed from the Memorable wave
+  (2026-08-25).
+- [ ] **P3 — hermes native capture lane.** SQLite one-store-many-sessions breaks the
+  hand-the-hook-a-path contract, and `src/core/transcripts/hermes.ts` is still
+  `provisional` (no populated production sample verified). `memorable ingest` is the
+  documented path. Filed from the Memorable wave (2026-08-25).
+- [ ] **P2 — verify memorable-cli ≥0.3.5 fixes the consent-before-egress ordering.**
+  0.3.4's `record` POSTs the trace to `/v1/extract` BEFORE its consent-checked store
+  (decompile-verified); gbrain mitigates with its own pre-spawn evidence check, but
+  the complete fix is CLI-side (asked in the adoption PR, along with confirming the
+  extraction API accepts arbitrary `harness` strings server-side). When a new CLI
+  version ships, re-verify by decompile and consider relaxing nothing — the gbrain
+  gate stays regardless. Filed from the Memorable wave (2026-08-25).
 - [ ] **P3 — PGLite admin-lane scoped minting.** `gbrain bootstrap harness` refuses to
   mint under a live PGLite serve (single-writer) and points at pre-mint + `--token`.
   Auto-driving `POST /admin/login` + `POST /admin/api/api-keys` (when
