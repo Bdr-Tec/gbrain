@@ -2,6 +2,46 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.30.0] - 2026-08-25
+
+Privacy hardening pass: the read-side privacy boundary is now guarded by a
+registry-driven sweep, so the whole class of "a new remote surface forgets
+the world-only filter" fails the build instead of shipping.
+
+### Added
+- **Remote privacy sweep** (`test/remote-privacy-sweep.test.ts`): every
+  remote-callable operation — including ones added in the future — is
+  dispatched against a seeded private corpus in both the single-source and
+  federated caller shapes, and the full response envelope (structured
+  fields, rendered text, error messages, and the hot-memory `_meta`
+  channel) is asserted free of private content. Fail-closed by design: a
+  new operation breaks the suite until it is classified, local-only
+  operations must be denied over non-local transports, and publish-gated
+  operations must deny with their gate named. Companion curated probes
+  landed in the trust-boundary suite (its static sibling).
+
+### Fixed
+- Several list-style read operations now honor page visibility for remote
+  callers the same way page reads and ambient-recall deltas already do
+  (same fix family as the v0.46.29.0 privacy work; found by the new sweep
+  on its first runs). Published aggregate counts and derived statistics
+  are adjusted with the filtered rows — and re-sorted — so remote
+  responses stay self-consistent and reveal nothing about what was
+  filtered; soft-deleted pages and mid-read deletions are handled
+  fail-closed. Trusted local callers are unaffected.
+- `find_anomalies` no longer clamps large-cohort counts to the display cap
+  of its page list when filtering, and `find_orphans`' totals stay
+  coherent for the thin-client doctor's orphan-ratio check.
+
+### To take advantage of v0.46.30.0
+```bash
+gbrain upgrade        # no migration needed — handler + test changes only
+gbrain doctor         # confirms the upgrade; remote surfaces re-verified
+```
+Remote MCP callers may see slightly fewer rows from list operations on
+brains with private pages — that is the fix working, not data loss; local
+CLI reads are unchanged.
+
 ## [0.46.29.0] - 2026-08-24
 
 The community wave: 38 contributor PRs landed (37 authors credited below) plus
