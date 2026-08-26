@@ -94,7 +94,8 @@ export async function runBackupCli(
   const json = args.includes('--json');
   const quiet = getCliOptions().quiet === true;
 
-  if (backupCheckDisabled() && sub === 'check') {
+  const disabled = backupCheckDisabled();
+  if (disabled && sub === 'check') {
     if (!quiet) console.error('backup check is disabled (GBRAIN_BACKUP_CHECK=0 or backup.check_enabled=false)');
     return { exitCode: 0 };
   }
@@ -105,9 +106,12 @@ export async function runBackupCli(
 
   // status recomputes when the cached verdict is warn (a raw `git remote add`
   // fix must show up immediately) or stale/absent; check always recomputes.
-  // A fresh ok cache answers `status` without touching the engine (no lock risk).
+  // A fresh ok cache answers `status` without touching the engine (no lock
+  // risk). Disabled silences COMPUTE on both subcommands (the ops-doc
+  // contract) — a disabled `status` is a cache-only reader.
   const stale = cached === null || isBackupStatusStale(cached);
-  const needCompute = sub === 'check' || stale || cached?.overall === 'warn';
+  const needCompute = !disabled && (sub === 'check' || stale || cached?.overall === 'warn');
+  if (disabled) lockNote = 'backup check disabled — verdict from cache only';
   if (needCompute) {
     try {
       const engine = await connect();
@@ -164,12 +168,14 @@ export async function runBackupCli(
 
   // The output itself is never suppressed — only the other channels' budgets
   // learn about this impression (uniform global-cap enforcement in the gate).
-  if (status.overall === 'warn') {
+  if (status.overall === 'warn' && !disabled) {
     try {
       backupNagGate('status', status).record();
     } catch {
       /* best-effort */
     }
   }
-  return { exitCode: exitFor(status) };
+  // Disabled means silent for automation too: a stale warn cache that can
+  // never refresh must not fail crons with exit 1.
+  return { exitCode: disabled ? 0 : exitFor(status) };
 }
