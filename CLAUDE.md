@@ -148,6 +148,7 @@ detail on demand.)
 | embedding spend gates / cost gate / `spend.posture` / off switches | `docs/operations/spend-controls.md` |
 | push-based context (volunteer/watch/reflex window) | `docs/guides/push-context.md` |
 | checkpoint compaction / compiled context files (`gbrain compile-context`) | `docs/guides/checkpoint-compaction.md` + `docs/guides/ambient-recall.md` |
+| chat connectors (live ChatGPT/Claude history sync — `gbrain connectors`) | `docs/guides/chat-connectors.md` + the `src/core/connectors/*` entries in `KEY_FILES.md` |
 | schema packs / page types / extraction | `docs/architecture/schema-packs.md`, `type-taxonomy.md`, `lens-packs.md` |
 | thin-client / remote MCP / cross-modal | `docs/architecture/thin-client.md` |
 | memory verbs / MCP tool surface (`--surface`) / conformance | `docs/protocol/MEMORY_VERBS_v1.md` + the `verbs*`/`surface.ts`/`protocol.ts` entries in `KEY_FILES.md` |
@@ -753,6 +754,46 @@ Files that MUST be checked on every ship:
 
 A ship without updated docs is an incomplete ship. Period.
 
+
+## "Say to your agent" rule: every feature doc addresses the END USER (IRON RULE)
+
+GBrain is installed and operated by an AI agent. Most users never type a
+`gbrain` command — they talk to their harness (Claude Code, Codex, OpenClaw,
+Hermes, Cursor). Documentation that only shows CLI blocks serves the operator
+and abandons the end user.
+
+**The rule:** whenever a feature is added or explained in a public-facing doc
+(README, CHANGELOG, docs/guides, tutorials), include the common end-user block:
+
+    **Say to your agent:** *"<natural-language prompt>"* — *"<optional second phrasing>"*
+
+- 1-3 quoted phrases a user can literally type into ANY harness (a 4th is fine
+  when it hands off to an adjacent skill, e.g. a capture block that also points
+  at cold-start's "fill my brain"). Plain English, outcome-framed ("connect my
+  chatgpt account and pull my whole history into the brain"); don't dress a bare
+  command name as a sentence.
+- **When a skill backs the feature, the phrases MUST come from (or contain) the
+  skill's frontmatter `triggers:`** — those are what the harness actually
+  routes on (baseline routing is substring match), so the doc and the router can
+  never drift apart. Verify each phrase against the real trigger before shipping.
+  The skills section of README points at `skills/RESOLVER.md` as the full
+  phrasebook.
+- **When NO skill backs the feature (a CLI-only path), be honest:** the phrase
+  states the outcome and names the command the agent runs for it ("Run a search
+  benchmark against LongMemEval — your agent runs `gbrain eval longmemeval`"),
+  rather than implying a trigger that doesn't exist.
+- Grouping two phrases for the SAME skill with a `/` (e.g. *"Brain health"* /
+  *"check backlinks"*) is allowed; separate distinct destinations with an em-dash.
+- CLI blocks stay — they serve operators and the agents themselves. The say
+  block sits adjacent, not instead.
+- CHANGELOG: every feature entry's "To take advantage of vX" block carries a
+  say line alongside the commands.
+- Same privacy bar as everything else public: generic placeholders in the
+  phrases, never real names.
+
+Litmus test: a non-technical user reads the section and knows the exact
+sentence to type into their agent. If they'd have to translate a flag into
+English themselves, the section fails.
 
 ## Privacy rule: scrub real names from public docs
 

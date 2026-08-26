@@ -118,10 +118,11 @@ describe('#3880 structural pins — all-source local_path selections filter arch
     // SourceTargetError instead of silently falling through.
     const src = readFileSync('src/core/source-resolver.ts', 'utf-8');
     expect(src).toContain('SELECT id, local_path, archived FROM sources WHERE local_path IS NOT NULL');
-    // Post-#4411 merge both tier-4 callers share one helper
-    // (resolveRegisteredPathMatch), so the active-over-archived tiering
-    // appears once at the shared site instead of once per inline copy.
-    expect(src.match(/archived !== true/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
-    expect(src.match(/resolveRegisteredPathMatch\(engine, cwd\)/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    // #4411: tier-4 realpath resolution was parallelized and the two
+    // active/archived filter passes were consolidated into one indexed loop
+    // over both tiers — same active-over-archived behavior (see the two
+    // behavioral tests above), expressed once instead of duplicated twice.
+    expect(src).toContain('for (const archivedTier of [false, true])');
+    expect(src.match(/\.archived === true\) !== archivedTier/g)?.length ?? 0).toBeGreaterThanOrEqual(1);
   });
 });

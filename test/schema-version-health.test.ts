@@ -9,12 +9,12 @@ describe('schemaVersionHealth', () => {
     });
   });
 
-  test('flags a database newer than the client as unsafe', () => {
+  test('warns (AHEAD, #2036 semantics) when the database is newer than the client', () => {
     expect(schemaVersionHealth(130, 125)).toEqual({
-      status: 'fail',
+      status: 'warn',
       message:
-        "Database schema version 130 is newer than this client's latest 125. " +
-        'Upgrade gbrain before performing writes; do not run migrations with this client.',
+        "Version 130 is AHEAD of this client's latest known version (125). " +
+        'Another node migrated this DB past what this client knows — upgrade this client before writing.',
     });
   });
 

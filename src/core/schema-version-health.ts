@@ -28,11 +28,16 @@ export function schemaVersionHealth(
   }
 
   if (version > latestVersion) {
+    // Forward skew: another node migrated the shared DB past what this client
+    // knows (multi-node brain, hub + spokes on one Postgres). Warn, not fail
+    // (#2036 semantics as shipped on master): the client can still read, and
+    // "upgrade this client" is the real fix — apply-migrations here would be
+    // actively wrong.
     return {
-      status: 'fail',
+      status: 'warn',
       message:
-        `Database schema version ${version} is newer than this client's latest ${latestVersion}. ` +
-        'Upgrade gbrain before performing writes; do not run migrations with this client.',
+        `Version ${version} is AHEAD of this client's latest known version (${latestVersion}). ` +
+        'Another node migrated this DB past what this client knows — upgrade this client before writing.',
     };
   }
 

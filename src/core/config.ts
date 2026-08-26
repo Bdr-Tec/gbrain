@@ -1171,6 +1171,9 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'search.image_query.max_bytes',
   'search.reranker.enabled',
   'search.track_retrieval',
+  // #4415: per-brain query-intent pattern extensions (JSON bank→regex[]),
+  // merged over the shipped banks in src/core/search/query-intent.ts.
+  'search.intent_patterns',
   // Models tier system (v0.31.12)
   'models.default',
   'models.tier.utility',
@@ -1181,6 +1184,14 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'models.dream.synthesize',
   'models.dream.extract_atoms',
   'cycle.extract_atoms.budget_usd',
+  'cycle.extract_atoms.max_source_chars',
+  'cycle.extract_atoms.page_discovery_budget',
+  // #4540: per-item extractor caps (defaults 50000 chars / 4096 tokens) plus
+  // an optional between-item pacing sleep (ms, default 0). Read via
+  // engine.getConfig in src/core/cycle/extract-atoms.ts.
+  'cycle.extract_atoms.max_input_chars',
+  'cycle.extract_atoms.max_output_tokens',
+  'cycle.extract_atoms.pacing_ms',
   'models.dream.patterns',
   'models.dream.synthesize_verdict',
   // #4152: preferred triage-model key (explicit pre-read in loadSynthConfig;
@@ -1243,6 +1254,11 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'dream.triage.max_tokens',
   'dream.triage.max_ms',
   'dream.triage.concurrency',
+  // #4494: propose_takes extractor output caps (defaults 2048/4096, floor
+  // 256, retry clamped >= base). Thinking models spend reasoning tokens
+  // inside maxTokens, so the hardcoded defaults truncated every dense page.
+  'dream.propose_takes.max_tokens',
+  'dream.propose_takes.retry_max_tokens',
   'dream.patterns.lookback_days',
   'dream.patterns.min_evidence',
   // #2782-family: patterns-phase subagent timeouts (mirror of the
@@ -1328,6 +1344,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = [
   'orphans.exclude_slugs',
   'sync.cost_gate_min_usd',
   'sync.federated_v2',
+  'sync.include_working_tree',
   // #2179: clamp window for DCR-requested per-client token TTLs. Read by
   // `gbrain serve --http` at startup; unset min defaults to 300s, unset max
   // defaults fail-closed to max(--token-ttl, min).
@@ -1373,6 +1390,7 @@ export const KNOWN_CONFIG_KEY_PREFIXES: readonly string[] = [
   //   parser; numeric 0 disables.
   'minions.',
   'pace.',              // pace.mode + PACE_MODE_CONFIG_KEYS (src/core/pace-mode.ts)
+  'connectors.',        // chat-connectors: source_id, sync_floor_min, embed_kickoff_min_pages, doctor_stale_hours, <provider>.{auto_sync,last_sync_at,auth_error_at,watermark_iso} (no secrets — creds are file-plane)
 ];
 
 /**

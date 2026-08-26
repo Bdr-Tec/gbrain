@@ -6186,19 +6186,42 @@ export const MIGRATIONS: Migration[] = [
   },
   {
     version: 141,
+    name: 'extract_rollup_expected_limit',
+    // #4482: orthogonal counter for EXPECTED-limit stops (per-source budget /
+    // walltime caps working as designed). halt_count keeps its historical
+    // meaning — rows written before this migration conflate error halts and
+    // cap stops and are deliberately NOT reclassified (they read as 0 caps,
+    // i.e. "unknown"). New writers record error halts in halt_count and cap
+    // stops here, so doctor's extract_health failure rate can exclude
+    // self-imposed capacity limits while keeping them observable.
+    idempotent: true,
+    sql: `
+      ALTER TABLE extract_rollup_7d
+        ADD COLUMN IF NOT EXISTS expected_limit_count INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
+  {
+    version: 142,
     name: 'takes_embedding_dimension_matches_config',
     // #2089: takes was created with a hard-coded vector(1536), while the
     // configured embedding model can emit another width (for example the
     // default zembed-1 2560d). The vector writer cannot be useful until the
     // column shares the configured dimension with content_chunks/facts.
-    // Renumbered to v141 because master consumed v133 (content_chunks
-    // embedded_text_hash), v134/v135 (chunk-index restore, event-time
-    // index), v136 (minion private queue owner metadata) and v137–v140
-    // (entity identity groups, timeline dedup re-key + one-time repair,
-    // chat usage ledger) while this PR was in flight.
+    // Renumbered v141 → v142: the wave-k branch shipped this AS v141 while
+    // master consumed v141 for extract_rollup_expected_limit (#4482), so a
+    // brain that ran the branch pre-merge recorded version 141 and would
+    // skip master's v141 forever. The guarded DDL below re-applies it here
+    // as a redundant first statement — idempotent, a no-op on fresh paths.
     idempotent: true,
     sql: '',
     handler: async (engine) => {
+      // Skew guard (see renumber note above): branch-tester DBs at v141
+      // missed extract_rollup_expected_limit; IF NOT EXISTS makes this free
+      // everywhere else.
+      await engine.executeRaw(
+        `ALTER TABLE extract_rollup_7d
+           ADD COLUMN IF NOT EXISTS expected_limit_count INTEGER NOT NULL DEFAULT 0`,
+      );
       const dimRows = await engine.executeRaw<{ value: string }>(
         `SELECT value FROM config WHERE key = 'embedding_dimensions'`,
       );
@@ -6233,7 +6256,7 @@ export const MIGRATIONS: Migration[] = [
              WHERE active AND embedding IS NOT NULL`,
         );
       }
-      process.stderr.write(`  v141: takes.embedding resized to vector(${embeddingDim}); existing take vectors cleared\n`);
+      process.stderr.write(`  v142: takes.embedding resized to vector(${embeddingDim}); existing take vectors cleared\n`);
     },
   },
 ];

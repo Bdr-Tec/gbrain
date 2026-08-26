@@ -55,12 +55,12 @@ const TIER_T3_MIN = 2;
 export interface SynthesizeConceptsOpts {
   brainDir?: string;
   /**
-   * The cycle's resolved source scope (cycleSourceId in cycle.ts). Without
-   * it every write below falls through to the engine's `?? 'default'`
-   * literal, which is fatal on any brain whose sole source is not named
-   * `default`: getPage's undefined-source path is source-agnostic, so the
-   * existence probe passes, then createVersion throws
-   * "page ... (source=default) not found" and kills the cycle.
+   * #4416: the cycle's resolved source scope (cycleSourceId in cycle.ts).
+   * Without it every write below falls through to the engine's `?? 'default'`
+   * literal, which misfiles (or, on the createVersion update path, kills the
+   * cycle) on any brain whose sole source is not named `default`: getPage's
+   * undefined-source path is source-agnostic, so the existence probe passes,
+   * then createVersion throws "page ... (source=default) not found".
    */
   sourceId?: string;
   dryRun?: boolean;
@@ -333,6 +333,7 @@ export async function runPhaseSynthesizeConcepts(
       );
       await importFromContent(engine, `concepts/${title}`, md, {
         noEmbed: !isAvailable('embedding'),
+        // #4416: target the cycle's resolved source, not the 'default' literal.
         sourceId: opts.sourceId,
       });
     }
@@ -346,11 +347,11 @@ export async function runPhaseSynthesizeConcepts(
     await maybeYield();
   }
 
-  // v0.42 Wave B3: receipt + rollup for synthesize_concepts. Brain-global
-  // phase — receipt/rollup carry the cycle's resolved source (opts.sourceId);
-  // 'default' survives only as the fallback for engines that really have a
-  // default source. Receipt only fires when concepts were actually written;
-  // rollup always fires so doctor sees the phase ran.
+  // v0.42 Wave B3: receipt + rollup for synthesize_concepts. Receipt/rollup
+  // carry the cycle's resolved source (#4416, opts.sourceId); 'default'
+  // survives only as the fallback for legacy unscoped callers. Receipt only
+  // fires when concepts were actually written; rollup always fires so doctor
+  // sees the phase ran.
   if (!opts.dryRun && conceptsWritten > 0) {
     const runId = `concepts-${Date.now().toString(36)}`;
     try {

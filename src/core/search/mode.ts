@@ -922,19 +922,34 @@ export function attributeKnob<K extends keyof ModeBundle>(
 // negative-offset request could read OR write the same cache row an
 // offset=0 (or any other offset) request shares. Any row written while that
 // gap was live may hold a wrong page under a knobsHash a clean request can
-// still reach. No new key part; the bump alone invalidates. (Merge note:
-// this wave and the megawave both claimed v=22/23 in flight; the merge
-// sequences the megawave's mw2/xp= bumps as 22/23 and this one as 24 per
-// the D8 convention.) Same one-time global cold-miss pattern as the bumps
+// still reach. No new key part; the bump alone invalidates (the PR authored
+// this as v=22; master had already reached 23, so it sequences here per the
+// D8 convention). Same one-time global cold-miss pattern as the bumps
 // above; refills within cache.ttl_seconds (3600s).
 //
 // bump 24→25 (#3617): `kof=` (keyword AND→OR fallback knob) joins the key.
-// The PR authored this as 18→19; 19 (ack=), 20 (pool floor), 21 (recency
-// fallback), 22/23 (megawave mw2 + xp=) and 24 (#4358 residual) were claimed
-// upstream while it was open, so it takes the next free number per the D8
-// sequencing convention. Same one-time global cold-miss pattern as the
-// bumps above.
-export const KNOBS_HASH_VERSION = 25;
+// The PR authored this as 23→24, but 24 was claimed by the negative-offset
+// bump above while it was open, so it takes the next free number per the D8
+// convention. Same one-time global cold-miss pattern as the bumps above.
+//
+// bump 25→26 folds salience/recency + intent_patterns (#4415) — wave-g. Three
+// new ctx parts:
+//   sal=/rec= — the EFFECTIVE per-call salience/recency modes (explicit
+//     SearchOpts ?? auto-suggested, resolved by the same chain bare
+//     hybridSearch uses — see hybrid.ts resolveEffectiveSalience/
+//     resolveEffectiveRecency). #4415 extended the per-call knobs to the
+//     default MCP `search` surface, so a salience:'strong' write (reordered
+//     result set) could be served to a salience:'off' lookup of the same
+//     query for the whole TTL — same contamination class as det= (v=16).
+//   ipat= — fingerprint of the applied `search.intent_patterns` config.
+//     The patterns change classification (intent weights + auto salience/
+//     recency/detail) and therefore results; without the fold, a config
+//     edit kept serving old-classification rows for up to the TTL.
+// Same one-time global cold-miss pattern as the bumps above; refills
+// within cache.ttl_seconds (3600s default). (Authored as 23→24 on the
+// wave-g branch; 24 and 25 were claimed by the two bumps above while it
+// was in flight, so it takes the next free number per the D8 convention.)
+export const KNOBS_HASH_VERSION = 26;
 
 /**
  * v0.36 (D8 / CDX-2) — second-arg context for the cache key. The
@@ -994,6 +1009,28 @@ export interface KnobsHashContext {
    * (private included), matching enforcement's strict `=== true` semantics.
    */
   excludePrivate?: boolean;
+  /**
+   * v=24 (#4415, wave-g): the EFFECTIVE salience/recency boost modes for
+   * this call — per-call SearchOpts, or the classifier's auto-suggestion
+   * when the caller didn't specify (hybridSearchCached resolves them with
+   * the same chain bare hybridSearch uses). Both reorder the post-fusion
+   * result set, so a 'strong' write must never serve an 'off' lookup.
+   * Undefined falls back to 'off' (the classifier's default for unmatched
+   * queries) so legacy callers hash stably.
+   */
+  salience?: 'off' | 'on' | 'strong';
+  recency?: 'off' | 'on' | 'strong';
+  /**
+   * v=24 (#4415, wave-g): fingerprint of the applied `search.intent_patterns`
+   * config (query-intent.ts intentPatternFingerprint — 'none' when unset).
+   * The patterns change classification (intent weights + auto salience/
+   * recency/detail) and therefore results; folding the fingerprint makes a
+   * config edit invalidate immediately instead of after the TTL. Threaded
+   * through ctx (not read process-globally like fts=) because the applied
+   * config is PER ENGINE (wave-g) — a process-global read would key one
+   * brain's rows under another brain's patterns in a multi-engine process.
+   */
+  intentPatterns?: string;
 }
 
 export function knobsHash(
@@ -1127,6 +1164,15 @@ export function knobsHash(
     // disjoint (relaxed rows vs empty keyword arm). `?? true` mirrors the
     // module's defensive read of other knobs for partial-knobs callers.
     `kof=${(knobs.keywordOrFallback ?? true) ? 1 : 0}`,
+    // v=26 additions (#4415, wave-g, append-only): effective salience/
+    // recency boost modes + applied intent-pattern config fingerprint. A
+    // salience/recency-boosted (reordered) write must never serve a lookup
+    // under different modes, and a `search.intent_patterns` edit changes
+    // classification → results, so it must change the key. 'off'/'none'
+    // fallbacks keep legacy callers stable.
+    `sal=${ctx?.salience ?? 'off'}`,
+    `rec=${ctx?.recency ?? 'off'}`,
+    `ipat=${ctx?.intentPatterns ?? 'none'}`,
   ];
   const h = createHash('sha256');
   h.update(parts.join('|'));

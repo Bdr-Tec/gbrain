@@ -7,7 +7,6 @@
 import type { BrainEngine } from '../../../core/engine.ts';
 import { resolveEnvNumber } from '../../../core/env-number.ts';
 import type { Check } from '../../doctor.ts';
-import { readWorkers } from '../../../core/minions/worker-registry.ts';
 
 /** Local alias; the shared warn-once memo lives in core so it can't fork per module. */
 const _resolveEnvNumber = resolveEnvNumber;
@@ -313,7 +312,6 @@ export async function computeWedgedQueueCheck(
   engine: BrainEngine,
   opts: { readWorkers?: () => Array<{ queue: string }> } = {},
 ): Promise<Check> {
-  const getLiveWorkers = opts.readWorkers ?? readWorkers;
   if (engine.kind !== 'postgres') {
     return { name: 'wedged_queue', status: 'ok', message: 'PGLite — no queue to check' };
   }
@@ -351,37 +349,60 @@ export async function computeWedgedQueueCheck(
     if (wedged.length === 0) {
       return { name: 'wedged_queue', status: 'ok', message: 'No wedged queues' };
     }
-    // local patch 85 (2026-08-21, no upstream PR — issue #3063 closed as
-    // "valid but not on the near-term roadmap"): the message previously
-    // asserted "worker alive but not claiming work" for every wedged queue,
-    // even when no worker process was ever subscribed to it (the queue-jobs
-    // stats surface already has a liveness signal for exactly this via the
-    // local worker-registry files — see `Scheduling priority` in `jobs
-    // stats`). Split the wedged set by whether a registered live worker
-    // actually exists for that queue, so the advisory repair matches the
-    // real fault instead of misdirecting the operator toward restarting a
-    // worker that was never there.
-    let liveWorkers: { queue: string }[] = [];
+    // #3063: "worker alive but not claiming work" would be a false claim
+    // for a queue no worker process was ever subscribed to. Split the
+    // wedged set by whether a registered live worker actually exists for
+    // that queue (getLiveWorkers() self-cleans dead entries), so the
+    // advisory repair matches the real fault instead of misdirecting the
+    // operator toward restarting a worker that was never there — a queue
+    // with no worker needs `start`, not `stop && start`.
+    let liveWorkers: Array<{ queue: string }> = [];
+    let registryReadable = true;
     try {
+      // Lazy import mirrors computeQueueHealthCheck's own registry access
+      // above — the registry module stays off this file's eager import
+      // graph and only loads once a wedge actually needs the signal.
+      const getLiveWorkers = opts.readWorkers
+        ?? (await import('../../../core/minions/worker-registry.ts')).readWorkers;
       liveWorkers = getLiveWorkers();
     } catch {
-      // Best-effort, same failure posture as the registry's own callers
-      // (jobs.ts). A registry read error must not turn this check red.
+      // A registry read error must not turn this check green (the queue is
+      // demonstrably wedged) — but it also must not fabricate a liveness
+      // verdict either way. Fall through to the liveness-unknown wording.
+      registryReadable = false;
+    }
+    if (!registryReadable) {
+      return {
+        name: 'wedged_queue',
+        status: 'fail',
+        message:
+          `Wedged queue(s) — worker registry unreadable, worker liveness unknown: ` +
+          `${wedged.map((w) => w.label).join('; ')}. ` +
+          `If a worker is running for the queue, restart it: ` +
+          '`gbrain jobs supervisor stop && gbrain jobs supervisor start [--queue <name>]`; ' +
+          'if none is, start one: `gbrain jobs supervisor start --queue <name> --detach`.',
+        details: {
+          wedged_queues: wedged.length,
+          worker_registry_unreadable: true,
+          threshold_minutes: thresholdMin,
+        },
+      };
     }
     const liveQueues = new Set(liveWorkers.map((w) => w.queue));
     const stuck = wedged.filter((w) => liveQueues.has(w.queue));
-    const stuckQueues = stuck.map((w) => w.label);
-    const noWorkerQueues = wedged.filter((w) => !liveQueues.has(w.queue)).map((w) => w.label);
+    const noWorker = wedged.filter((w) => !liveQueues.has(w.queue));
+
     const messageParts: string[] = [];
-    if (stuckQueues.length > 0) {
-      // Queue-aware restart hint: the bare stop/start pair bounces the DEFAULT
-      // worker — for a non-default wedged queue that advice restarts the wrong
-      // process. Name the queue in the start command. Queue names are
-      // producer-controlled and this hint gets copy-pasted (by operators AND
-      // remediation agents), so embedded quotes are escaped for the shell.
+    if (stuck.length > 0) {
+      // Queue-aware restart hint (upstream v0.46.26.0): the bare stop/start
+      // pair bounces the DEFAULT worker — for a non-default wedged queue
+      // that advice restarts the wrong process. Name the queue in the
+      // start command. Queue names are producer-controlled and this hint
+      // gets copy-pasted (by operators AND remediation agents), so
+      // embedded quotes are escaped for the shell.
       const shellQuote = (q: string) => `'${q.replace(/'/g, String.raw`'\''`)}'`;
       const stuckQueueNames = stuck.map((w) => w.queue);
-      const nonDefault = stuckQueueNames.filter(q => q !== 'default');
+      const nonDefault = stuckQueueNames.filter((q) => q !== 'default');
       const hints: string[] = [];
       if (nonDefault.length < stuckQueueNames.length || nonDefault.length === 0) {
         hints.push('`gbrain jobs supervisor stop && gbrain jobs supervisor start`');
@@ -389,16 +410,15 @@ export async function computeWedgedQueueCheck(
       for (const q of nonDefault) {
         hints.push(`\`gbrain jobs supervisor stop && gbrain jobs supervisor start --queue ${shellQuote(q)}\``);
       }
-      const restartHint = hints.join(', ');
       messageParts.push(
-        `Wedged queue(s) — worker alive but not claiming work: ${stuckQueues.join('; ')}. ` +
-          `Restart the worker so it rebuilds a fresh DB pool: ${restartHint}, ` +
+        `Wedged queue(s) — worker alive but not claiming work: ${stuck.map((w) => w.label).join('; ')}. ` +
+          `Restart the worker so it rebuilds a fresh DB pool: ${hints.join(', ')}, ` +
           `then \`gbrain jobs retry <id>\` on any dead-lettered jobs.`,
       );
     }
-    if (noWorkerQueues.length > 0) {
+    if (noWorker.length > 0) {
       messageParts.push(
-        `No worker subscribed to queue(s): ${noWorkerQueues.join('; ')}. ` +
+        `No worker subscribed to queue(s): ${noWorker.map((w) => w.label).join('; ')}. ` +
           `Start one: \`gbrain jobs supervisor start --queue <name> --detach\` ` +
           `or \`gbrain jobs work --queue <name>\`.`,
       );
@@ -409,8 +429,8 @@ export async function computeWedgedQueueCheck(
       message: messageParts.join(' '),
       details: {
         wedged_queues: wedged.length,
-        stuck_worker_queues: stuckQueues.length,
-        no_worker_queues: noWorkerQueues.length,
+        stuck_worker_queues: stuck.length,
+        no_worker_queues: noWorker.length,
         threshold_minutes: thresholdMin,
       },
     };

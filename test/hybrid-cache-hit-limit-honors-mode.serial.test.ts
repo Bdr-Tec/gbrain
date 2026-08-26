@@ -31,10 +31,10 @@
  *
  * Drives a real store→hit roundtrip (mocked `embed`/`embedQuery` for a
  * deterministic vector, real PGLite SemanticQueryCache — same pattern as
- * test/hybrid-cached-hit-budget-meta.serial.test.ts) with 30 keyword-
+ * test/hybrid-cached-hit-budget-meta.serial.test.ts) with 60 keyword-
  * findable pages spread across 6 page types (dedup's type-diversity layer
  * caps any one type at 60% of the result set, so a single type would
- * silently shrink the pool below 25 regardless of this fix). `autocut` and
+ * silently shrink the pool below 50 regardless of this fix). `autocut` and
  * `relationalRetrieval` are forced off per-call so the result count is
  * driven only by the limit slice under test, not by an unrelated cliff cut
  * or graph arm.

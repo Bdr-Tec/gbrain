@@ -666,10 +666,16 @@ async function runPipelineBodyInner(
   const legacyBucket: SurvivedFact[] = [];
   if (localPath === null) {
     if (!writeThroughDisabled) {
+      // #4489: name the REAL remedy. The sources dispatcher has no
+      // "update" verb — attaching a working tree to a path-less source goes
+      // through `gbrain sources add <id> --path <dir>` (the #3903
+      // non-destructive attach path in sources-ops.ts). Pinned by
+      // test/facts-backstop-remedy-verb.test.ts.
       warnOnce(
         'facts:thin-client-fallback',
         '[facts] sources.local_path unset for source_id=' + ctx.sourceId +
-        ' — falling through to DB-only inserts. Configure local_path via `gbrain sources update` to enable system-of-record fence writes.',
+        ' — falling through to DB-only inserts. Attach a working tree via `gbrain sources add ' + ctx.sourceId +
+        ' --path <dir>` to enable system-of-record fence writes.',
       );
     }
     for (const s of survived) legacyBucket.push(s);

@@ -449,7 +449,7 @@ ${fenceRows}
     expect(moved?.timeline ?? '').toContain('gbrain:facts:begin');
 
     const r = await runExtractFacts(engine, { slugs: [slug] });
-    expect(r.warnings.some(w => w.includes('FACTS_FENCE_BELOW_TIMELINE'))).toBe(true);
+    expect(r.warnings.some(w => w.includes('FACTS_FENCE_BELOW_SENTINEL'))).toBe(true);
     expect(r.factsDeleted).toBe(0);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

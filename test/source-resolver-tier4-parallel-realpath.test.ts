@@ -34,10 +34,9 @@ function makeStub(paths: Array<{ id: string; local_path: string }>): BrainEngine
   return {
     kind: 'pglite',
     executeRaw: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
-      // Post-#3880 merge the tier-4 listing selects the archived flag too
-      // (`SELECT id, local_path, archived FROM sources …`) — match on the
-      // shared WHERE clause so both query shapes hit the stub. Rows carry no
-      // `archived` key and are treated as active (the pre-v34 behavior).
+      // Matches both query shapes of listRegisteredLocalPathSources (#3880):
+      // the archived-column query and its pre-v34 column-less fallback. Rows
+      // carry no `archived` key here → treated as active.
       if (sql.includes('FROM sources WHERE local_path IS NOT NULL')) {
         return paths as unknown as T[];
       }

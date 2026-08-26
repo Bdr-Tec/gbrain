@@ -23,7 +23,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { execSync } from 'child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isSyncable, unsyncableReason, isPathPruned } from '../src/core/sync.ts';
@@ -107,5 +107,22 @@ describe('collectSyncableFiles — import.ts entry point (git-ls-files fast path
     } finally {
       teardown();
     }
+  });
+});
+
+describe('sync.ts delta path threads includeHidden (#4027 merge guard)', () => {
+  // The hoisted syncOpts in src/commands/sync.ts is shared by the delta-path
+  // isSyncable() filters AND the #3974 working-tree drift counter. It is also
+  // where a master-merge can silently drop the flag: every
+  // `isSyncable(path, syncOpts)` call keeps compiling and every
+  // classifier-level test above stays green while --include-hidden parses and
+  // does nothing. Pin the threading structurally (the classifier tests above
+  // cover behavior; this covers the wiring the classifier can't see).
+  test('the hoisted syncOpts literal carries includeHidden', () => {
+    const src = readFileSync(join(import.meta.dir, '..', 'src', 'commands', 'sync.ts'), 'utf8');
+    expect(src).toMatch(/const syncOpts = \{ strategy: opts\.strategy, includeHidden: opts\.includeHidden \}/);
+    // The strategy-only form is the regression shape (pre-#4027 master): its
+    // reappearance means a merge resolved the hoist without the threading.
+    expect(src).not.toMatch(/const syncOpts = opts\.strategy \? \{ strategy: opts\.strategy \} : undefined/);
   });
 });
