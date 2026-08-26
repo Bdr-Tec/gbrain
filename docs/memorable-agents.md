@@ -50,9 +50,14 @@ Two side effects worth knowing before you run setup commands:
    stamps stop validating and the disclosure runs again. `…enabled false` or
    `config unset` revoke it.
 
-Kill switch: `GBRAIN_MEMORABLE=0` (also `false`/`off`/`no`) disables
-everything, env-only. For the OpenClaw lane this is read by the **gateway
+Kill switch: `GBRAIN_MEMORABLE=0` (also `false`/`off`/`no`/`n`/`disable`/
+`disabled`/`none`, whitespace-trimmed) disables everything, env-only; no env
+value can ever enable. For the OpenClaw lane this is read by the **gateway
 process** — restart it to apply; the config gate applies live per compaction.
+On a machine where an OLDER gbrain binary might also run (mixed versions
+sharing `~/.gbrain`), the env kill switch is the version-safe off switch —
+older binaries route `config set …enabled false` through a plane the hook
+children don't read.
 
 **What is captured, per harness:**
 
@@ -60,7 +65,7 @@ process** — restart it to apply; the config gate applies live per compaction.
 |---|---|---|
 | Claude Code | session end (hook) | full parsed window's tool calls + args, span-aligned with the corpus |
 | Codex | session end (trust-gated `hooks.json` entry managed by `gbrain bootstrap`) | rollout tool calls + args (no per-call success flags — codex does not persist them) |
-| OpenClaw | **per compaction only** — short sessions that never compact are not captured, and the tail after the last compaction never is | tool **names only** for now (`input: null`; the args field is unobserved in OpenClaw's session format). Memorable's API refuses name-only traces as not replayable (`no_decisive_steps`), so expect OpenClaw relays to be rejected until argument capture lands — the rejection is visible in `memorable doctor` and gbrain's relay-health check, never silent |
+| OpenClaw | **per compaction only** — short sessions that never compact are not captured, and the tail after the last compaction never is; a window whose text trips the high-entropy secret scan is not relayed at all (fail-closed — the next window re-evaluates) | tool **names only** for now (`input: null`; the args field is unobserved in OpenClaw's session format). Memorable's API refuses name-only traces as not replayable (`no_decisive_steps`), so expect OpenClaw relays to be rejected until argument capture lands — the rejection is visible in `memorable doctor`, and `gbrain doctor` shows it as an ok-with-note (an expected, documented state, not a standing warning) |
 | anything else | manual | `memorable ingest trace.json` |
 
 Local artifacts (all 0600 under `~/.gbrain/integrations/hooks/`, size-capped):
@@ -213,7 +218,7 @@ cannot empty is not one they can trust.
 | `record` says no session receipt found | The gbrain relay is off, or this harness has no capture lane (capture: Claude Code + Codex at session end, OpenClaw per compaction) | Enable it with `gbrain config set integrations.memorable.enabled true` (a HUMAN must accept the disclosure — agents relay the command, or append `--yes` only when the human already consented), or use `memorable ingest -` with your own trace |
 | Relay stays off even after `memorable enable` | `memorable enable` flips gbrain's config flag, but gbrain's own disclosure consent is separate and can only be granted through gbrain | Run `gbrain config set integrations.memorable.enabled true` and accept the disclosure; `gbrain doctor` names this state (`disclosure_missing`) |
 | A consent error on write | The human has not opted in | `memorable enable`. Never work around a consent refusal |
-| OpenClaw relays rejected with `no_decisive_steps` | OpenClaw capture is name-only for now (no tool arguments) and the extraction API refuses traces with nothing replayable | Expected until argument capture lands; the rejection is logged, never silent |
+| OpenClaw relays rejected with `no_decisive_steps` | OpenClaw capture is name-only for now (no tool arguments) and the extraction API refuses traces with nothing replayable | Expected until argument capture lands; `gbrain doctor` reports it as ok-with-note (`expected_openclaw_rejection`) so the ladder stays meaningful for real failures |
 | Codex hook wired but nothing ever recorded | Codex hooks fail SILENTLY when their config.toml trust entry is stale (e.g. the SessionEnd groups were reordered) | Re-run `gbrain bootstrap hooks --harness codex` to re-trust; `gbrain doctor` warns (`codex_hooks_never_fired`) |
 | Commands hang, then time out against the brain | Something else holds gbrain's single-writer PGLite lock — often a long-running process like a viewer or `gbrain serve` | `cat <data-dir>/.gbrain-lock/lock` names the holder's PID and subcommand. Stop that process; the lock releases. A live holder is deliberately never stolen — the old steal-on-stale behavior corrupted data directories |
 

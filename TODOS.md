@@ -7047,6 +7047,55 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   extraction API accepts arbitrary `harness` strings server-side). When a new CLI
   version ships, re-verify by decompile and consider relaxing nothing — the gbrain
   gate stays regardless. Filed from the Memorable wave (2026-08-25).
+- [ ] **P2 — win32: resolveMemorableBin finds `.cmd` shims spawn() refuses to run.**
+  The resolver accepts `.cmd`/`.exe` on win32 but the detached relay spawn passes no
+  `shell: true` — Node/Bun refuse direct `.cmd` spawn since the CVE-2024-27980
+  hardening, the async error is swallowed, and an npm-installed memorable on Windows
+  looks resolvable yet never executes (only the delayed `relay_never_reported` doctor
+  warn surfaces it). Fix: spawn via `cmd.exe /c` for `.cmd`/`.bat`, or resolve the
+  underlying `.js` entry. **Start:** `src/core/context/hook-heartbeat.ts`
+  resolveMemorableBin + the spawn site. Filed from the ship review (2026-08-26).
+- [ ] **P3 — openclaw-only hosts never compact session-receipts.jsonl.** The openclaw
+  lane deliberately skips receipts compaction (hook lane is the ONE compactor —
+  two-writer rename race), so a host running ONLY the openclaw lane grows the file
+  unbounded (slowly: name-only receipts are ~1-2 KB/line vs claude's ~110 KB). Fix
+  shape: a converging-trim discipline like the relay file's, or a quiet-path
+  compaction outside the compact() callback. **Start:**
+  `src/core/context/hook-heartbeat.ts` appendSessionReceipt + context-engine.ts
+  receipt block. Filed from the ship review (2026-08-26).
+- [ ] **P3 — flag-registry generator: exclude spawn-argv string literals.** The
+  text-scan generator picked up `--session` (from the memorable spawn argv) and
+  `--harness` (from imports) into commands' accept-lists, so
+  `gbrain sync --harness codex` is silently accepted instead of failing loud. Teach
+  `scripts/generate-flag-registry.ts` to skip flags that only appear inside
+  spawn()/argv arrays (or add an exclusion marker), then regenerate. **Start:**
+  `scripts/generate-flag-registry.ts` + `src/core/cli-flag-registry.generated.ts`.
+  Filed from the ship review (2026-08-26).
+- [ ] **P3 — consolidate the memorable test fixtures.** The stub `memorable` shell
+  script, the CLI-evidence config seed, and the full opt-in chain are re-implemented
+  in four suites (memorable-relay.serial, context-engine-checkpoint.serial,
+  doctor-memorable, session-receipts) — extract `test/helpers/memorable-fixtures.ts`
+  so a consent-shape change is one edit. Filed from the ship review (2026-08-26).
+- [ ] **P3 — readJsonlTailLines: incremental window growth.** The doubling retry
+  re-opens and re-reads the whole window from scratch (up to ~31 MB cumulative in
+  the pathological case) and zero-fills with Buffer.alloc; read only the
+  newly-uncovered prefix on retry and use allocUnsafe. Rare path (fires only when a
+  window holds zero complete lines). **Start:** `src/core/context/hook-heartbeat.ts`
+  readJsonlTailLines. Filed from the ship review (2026-08-26).
+- [ ] **P2 — openclaw real-plugin door: extend with a receipt+relay assertion.** The
+  per-compaction Memorable receipt is pinned at the unit/serial tier
+  (context-engine-checkpoint.serial MR1-MR3) but the installed-plugin e2e door
+  (`test/e2e/openclaw-plugin-load-real.test.ts`) does not yet assert a receipt lands
+  through the real plugin path; a deadline-seam unit test for the always-skip
+  receipts-compaction posture is also unwritten. Filed from the ship review
+  (2026-08-26).
+- [ ] **P2 — codex e2e door: assert codex EXECUTES the trust-gated hook.** The heavy
+  door asserts the hooks.json + trust-entry pair EXISTS but not that a live
+  `codex exec` session-end actually fires it (a receipt landing after the smoke turn
+  would pin gbrain's codexTrustHash against codex's fingerprint.rs for real — the
+  golden-vector unit test pins OUR recipe, not the consumer's acceptance). **Start:**
+  `test/e2e/bootstrap-real-codex.serial.test.ts` (heavy lane, keyless codex turn).
+  Filed from the ship review (2026-08-26).
 - [ ] **P3 — PGLite admin-lane scoped minting.** `gbrain bootstrap harness` refuses to
   mint under a live PGLite serve (single-writer) and points at pre-mint + `--token`.
   Auto-driving `POST /admin/login` + `POST /admin/api/api-keys` (when
