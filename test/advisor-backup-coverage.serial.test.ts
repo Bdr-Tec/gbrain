@@ -331,6 +331,103 @@ describe('collectBackupCoverage nag ceiling', () => {
   });
 });
 
+// ── Workspace + db_only findings (local branch) ──────────────────────────────
+
+/** Install receipt at configDir()/bootstrap/receipt.json (readReceipt shape). */
+function writeReceipt(ws: string, extra: Record<string, unknown> = {}): void {
+  const dir = join(tmp, '.gbrain', 'bootstrap');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'receipt.json'),
+    JSON.stringify(
+      {
+        receipt_version: 1,
+        workspace_dir: ws,
+        source_id: 'workspace',
+        agent_name: 'agent-example',
+        created_at: new Date().toISOString(),
+        created_by: 'test',
+        brain_created_by_bootstrap: false,
+        created_paths: [],
+        registrations: [],
+        ...extra,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+describe('collectBackupCoverage local — workspace and db_only findings', () => {
+  test('receipt without repo_url → backup_workspace_no_repo warn with the bootstrap-repo fix', async () => {
+    const ws = join(tmp, 'ws-no-repo');
+    mkdirSync(ws, { recursive: true });
+    writeReceipt(ws); // no repo_url → bootstrap_workspace no_remote asset
+
+    const { engine } = makeEngine({ sources: [], pageCount: 0 });
+    const findings = await collectBackupCoverage.collect(ctx(engine));
+
+    expect(findings).toHaveLength(1);
+    const f = findings[0]!;
+    expect(f.id).toBe('backup_workspace_no_repo');
+    expect(f.severity).toBe('warn');
+    expect(f.title).toContain('workspace has no private repo');
+    expect(f.detail).toContain('no private repo yet');
+    expect(f.fix.command_argv).toEqual(['gbrain', 'bootstrap', 'repo']);
+    expect(f.ask_user).toBe(true);
+    expect(f.collector).toBe('backup-coverage');
+  });
+
+  test('db_only source alongside a no-remote repo → backup_db_only_caveat info rides the warn batch', async () => {
+    const noRemote = makeNoRemoteRepo('plain-repo');
+    const tiered = makeNoRemoteRepo('tiered-repo');
+    writeFileSync(join(tiered, 'gbrain.yml'), 'storage:\n  db_only:\n    - private/\n');
+
+    const { engine } = makeEngine({
+      sources: [
+        { id: 'plain-src', local_path: noRemote },
+        { id: 'tiered-src', local_path: tiered },
+      ],
+      pageCount: 0,
+    });
+    const findings = await collectBackupCoverage.collect(ctx(engine));
+
+    const caveat = findings.find((f) => f.id === 'backup_db_only_caveat');
+    expect(caveat).toBeDefined();
+    expect(caveat?.severity).toBe('info');
+    expect(caveat?.title).toContain('db_only');
+    expect(caveat?.detail).toContain('undeclared_db_only_pages');
+    expect(caveat?.fix.command_argv).toBeNull();
+    // The warn batch it rides on is present too (both repos lack an origin).
+    expect(findings.some((f) => f.id === 'backup_source_no_remote:plain-src')).toBe(true);
+    expect(findings.some((f) => f.id === 'backup_source_no_remote:tiered-src')).toBe(true);
+  });
+});
+
+// ── Kill switch: disabled → [] on BOTH branches ──────────────────────────────
+
+describe('collectBackupCoverage — GBRAIN_BACKUP_CHECK=0', () => {
+  test('disabled → [] on local AND remote branches even with a warn cache; engine untouched, no nag write', async () => {
+    process.env.GBRAIN_BACKUP_CHECK = '0';
+    saveBackupStatus(warnCache()); // a stale warn cache must go silent too
+
+    // Any engine touch (compute attempt) blows the test up.
+    const throwing = {
+      executeRaw: async () => {
+        throw new Error('disabled collect must not query the engine');
+      },
+    } as unknown as AdvisorContext['engine'];
+
+    const local = await collectBackupCoverage.collect(ctx(throwing));
+    expect(local).toEqual([]);
+
+    const remote = await collectBackupCoverage.collect(ctx(throwing, { remote: true }));
+    expect(remote).toEqual([]);
+
+    expect(existsSync(nagPath)).toBe(false); // no nag-state write on either branch
+  });
+});
+
 // ── 5. COLLECTORS registration pin ───────────────────────────────────────────
 
 describe('advisor registration', () => {

@@ -3,7 +3,8 @@
  *
  * Pins the D4 trust boundary: git probes against DB-supplied local_path run
  * ONLY on the trusted local doctor path (localOnly: true). The remote surface
- * is a cache-only reader — it must never spawn git and never touch the engine.
+ * is a cache-only, AGGREGATE-ONLY reader — it must never spawn git, never
+ * touch the engine, and never surface asset ids / local paths (counts only).
  *
  * Isolation: tmp GBRAIN_HOME (configDir() appends '.gbrain'), the status-file
  * path seams, real tmp git fixtures (no-origin repo; origin-backed clean repo
@@ -187,11 +188,11 @@ describe('checkBackupCoverage — remote surface (no localOnly)', () => {
     expect(check.message).toContain('gbrain backup check');
   });
 
-  test('warn cache → warn from cache with cache-only note; zero git subprocesses, zero engine calls', async () => {
+  test('warn cache → AGGREGATE-ONLY warn from cache; zero git subprocesses, zero engine calls', async () => {
     // Trust pin (D4): the cached asset id points at a REAL git repo dir. If
     // the remote path probed git or touched the engine, the throwing engine
-    // stub would blow up / the result would not be the verbatim cached
-    // verdict. It must return straight from the cache file.
+    // stub would blow up. And the remote surface is aggregate-only: the
+    // message carries COUNTS ('N of M'), never the asset id / local path.
     const repo = makeNoOriginRepo('real-repo-dir');
     saveBackupStatus(makeWarnCache(repo));
 
@@ -199,12 +200,14 @@ describe('checkBackupCoverage — remote surface (no localOnly)', () => {
 
     expect(check.name).toBe('backup_coverage');
     expect(check.status).toBe('warn');
-    expect(check.message).toContain(repo); // the cached asset id, verbatim
+    expect(check.message).toContain('1 of 1'); // aggregate counts
+    expect(check.message).not.toContain(repo); // NEVER the asset id / local path
+    expect(check.message).not.toContain('real-repo-dir');
     expect(check.message).toContain('gbrain backup status');
 
     const details = check.details as { note?: string; computed_by?: string; cache_age?: string };
-    expect(details.note).toBe('cache-only (remote surface never probes git)');
-    expect(details.computed_by).toBe('cli'); // cached provenance, not recomputed as 'doctor'
+    expect(details.note).toBe('cache-only (remote surface never probes git; aggregate counts only)');
+    expect(details.computed_by).toBeUndefined(); // remote details drop provenance
     expect(typeof details.cache_age).toBe('string');
   });
 
@@ -218,7 +221,9 @@ describe('checkBackupCoverage — remote surface (no localOnly)', () => {
     const check = await checkBackupCoverage(makeThrowingEngine(), {});
     expect(check.status).toBe('ok');
     expect(check.message).toContain('1 knowledge repo(s) git-backed');
-    expect((check.details as { note?: string }).note).toBe('cache-only (remote surface never probes git)');
+    expect((check.details as { note?: string }).note).toBe(
+      'cache-only (remote surface never probes git; aggregate counts only)',
+    );
   });
 });
 
@@ -241,5 +246,61 @@ describe('checkBackupCoverage — GBRAIN_BACKUP_CHECK=0', () => {
     const check = await checkBackupCoverage(makeThrowingEngine(), {});
     expect(check.status).toBe('ok');
     expect(check.message).toContain('disabled');
+  });
+});
+
+// ── Local catch branch: getBackupStatus rethrows, checker degrades to warn ───
+
+describe('checkBackupCoverage — localOnly catch branch', () => {
+  test('compute throws with NO cache → warn "backup coverage unreadable", nothing persisted', async () => {
+    // Verified against the source: a throwing engine alone only DEGRADES the
+    // verdict (loadAllSources/countLivePages catch internally — no throw). To
+    // make getBackupStatus itself throw through the public API, inject an
+    // Invalid Date (checked_at serialization throws mid-compute — the same
+    // idiom as backup-coverage.serial.test.ts). With NO cache to fall back
+    // to, getBackupStatus rethrows and the checker's try/catch owns it.
+    const throwing = {
+      kind: 'pglite',
+      executeRaw: async () => {
+        throw new Error('engine down');
+      },
+    } as unknown as BrainEngine;
+
+    expect(existsSync(statusFile)).toBe(false);
+    const check = await checkBackupCoverage(throwing, {
+      localOnly: true,
+      now: new Date('not-a-date'),
+    });
+
+    expect(check).toEqual({
+      name: 'backup_coverage',
+      status: 'warn',
+      message: 'backup coverage unreadable',
+    });
+    // The failed compute never persisted anything (no clobber, no cache).
+    expect(existsSync(statusFile)).toBe(false);
+  });
+
+  test('broken compute WITH a cache → the cached verdict is returned, not the unreadable warn', async () => {
+    // The sibling path: with a cache present, getBackupStatus never surfaces
+    // the failure (a fresh cache short-circuits; even a failed compute falls
+    // back to the prior verdict) — the checker renders the cached verdict.
+    const cache = makeWarnCache('cached-asset-src');
+    saveBackupStatus(cache);
+    const throwing = {
+      kind: 'pglite',
+      executeRaw: async () => {
+        throw new Error('engine down');
+      },
+    } as unknown as BrainEngine;
+
+    const check = await checkBackupCoverage(throwing, {
+      localOnly: true,
+      now: new Date('not-a-date'),
+    });
+
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('cached-asset-src'); // local surface names assets
+    expect(check.message).not.toBe('backup coverage unreadable');
   });
 });

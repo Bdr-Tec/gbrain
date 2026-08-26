@@ -60,13 +60,38 @@ export async function checkBackupCoverage(
     };
   }
   if (!opts.localOnly) {
+    // Remote surface: cache-only AND aggregate-only. toCheck's warn message
+    // names asset ids (local paths for workspace assets) — that is local-owner
+    // detail; a remote reader gets counts, never identifiers (the same
+    // amendment-29 discipline as backupNoticeText's 'aggregate' surface).
     const cached = loadBackupStatus();
-    return cached
-      ? toCheck(cached, 'cache-only (remote surface never probes git)')
+    if (!cached) {
+      return {
+        name: 'backup_coverage',
+        status: 'ok',
+        message: 'not checked from this surface — run `gbrain backup check` on the brain host',
+      };
+    }
+    const details = {
+      totals: cached.totals,
+      checked_at: cached.checked_at,
+      cache_age: backupCacheAge(cached),
+      note: 'cache-only (remote surface never probes git; aggregate counts only)',
+    };
+    return cached.overall === 'warn'
+      ? {
+          name: 'backup_coverage',
+          status: 'warn',
+          message:
+            `${cached.totals.no_remote} of ${cached.totals.assets} knowledge asset(s) have no git remote — ` +
+            'run `gbrain backup status` on the brain host for the per-asset detail and fix commands.',
+          details,
+        }
       : {
           name: 'backup_coverage',
           status: 'ok',
-          message: 'not checked from this surface — run `gbrain backup check` on the brain host',
+          message: `${cached.totals.recoverable_repos} knowledge repo(s) git-backed; last checked ${backupCacheAge(cached)}`,
+          details,
         };
   }
   try {

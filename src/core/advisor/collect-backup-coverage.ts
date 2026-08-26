@@ -13,12 +13,16 @@
  */
 
 import { getBackupStatus } from '../backup/coverage.ts';
-import { backupNagGate, loadBackupStatus } from '../backup/status-file.ts';
+import { backupCheckDisabled, backupNagGate, loadBackupStatus } from '../backup/status-file.ts';
 import type { AdvisorCollector, AdvisorFinding } from './types.ts';
 
 export const collectBackupCoverage: AdvisorCollector = {
   id: 'backup-coverage',
   collect: async (ctx) => {
+    // The off switch silences compute AND every render channel (the ops-doc
+    // contract) — including this collector, on both the local compute branch
+    // and the remote cache-read branch.
+    if (backupCheckDisabled()) return [];
     const findings: AdvisorFinding[] = [];
     const local = !ctx.remote;
 
