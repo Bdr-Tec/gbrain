@@ -311,6 +311,20 @@ describe('high-entropy assignment reaches compound credential keys', () => {
     });
   }
 
+  test('the value floor is exactly 12 — the 16-char-SMTP-password class that motivated it stays covered', () => {
+    // 12 distinct chars = log2(12) ≈ 3.585 bits/char, just over the 3.5 gate.
+    expect(scanText('password=aB3xK9mQ2pR7', { highEntropy: true }).map((f) => f.pattern)).toEqual(['high_entropy_assignment']);
+    // 11 chars can never reach 3.5 bits/char (log2(11) ≈ 3.46) — and the
+    // regex floor refuses it first. Pinned so a floor edit is a visible edit.
+    expect(scanText('password=aB3xK9mQ2pR', { highEntropy: true })).toEqual([]);
+  });
+
+  test('the widened keywords passphrase and credential fire', () => {
+    for (const k of ['passphrase', 'credential'] as const) {
+      expect(scanText(`${k}=${HI}`, { highEntropy: true }).map((f) => f.pattern)).toEqual(['high_entropy_assignment']);
+    }
+  });
+
   /** Known limitation, asserted so it stays visible rather than being
    * rediscovered. The left boundary requires the keyword to START at a
    * non-alphanumeric, so a camelCase compound (`apiAccessToken`) is out of

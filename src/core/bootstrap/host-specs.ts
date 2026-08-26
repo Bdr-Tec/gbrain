@@ -329,8 +329,13 @@ export function claudeProjectSkillsDir(workspaceDir: string): string {
  * clobber the operator's real ~/.codex/config.toml.
  */
 export function codexConfigPath(): string {
-  const codexHome = process.env.CODEX_HOME?.trim();
-  return join(codexHome || join(homedir(), '.codex'), 'config.toml');
+  return join(codexHome(), 'config.toml');
+}
+
+/** THE one CODEX_HOME resolution (env override, else ~/.codex) — every codex
+ * path below joins onto it so the discipline can never drift per-path. */
+function codexHome(): string {
+  return process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
 }
 
 /**
@@ -342,8 +347,7 @@ export function codexConfigPath(): string {
  * process that spawned the hook.
  */
 export function codexSessionsDir(): string {
-  const codexHome = process.env.CODEX_HOME?.trim();
-  return join(codexHome || join(homedir(), '.codex'), 'sessions');
+  return join(codexHome(), 'sessions');
 }
 
 /**
@@ -353,8 +357,7 @@ export function codexSessionsDir(): string {
  * CODEX_HOOKS_SPEC_TARGET there for the verified 0.147.0 facts.
  */
 export function codexHooksPath(): string {
-  const codexHome = process.env.CODEX_HOME?.trim();
-  return join(codexHome || join(homedir(), '.codex'), 'hooks.json');
+  return join(codexHome(), 'hooks.json');
 }
 
 /** Codex hook events gbrain wires (v1: session-end capture only — a

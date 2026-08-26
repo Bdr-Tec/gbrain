@@ -223,8 +223,13 @@ export interface ParsedTranscript {
  */
 export function parseTranscript(
   path: string,
-  opts: { maxBytes?: number } = {},
+  opts: { maxBytes?: number; collectToolCalls?: boolean } = {},
 ): ParsedTranscript {
+  // Tool calls exist only for the memorable receipt; when the caller knows
+  // the gate is off (the default population), skip the per-entry collection,
+  // the results map, and the join — and never retain tool INPUTS (which can
+  // embed whole file contents) for users who never opted in.
+  const collectToolCalls = opts.collectToolCalls !== false;
   const maxBytes = Math.max(1, Math.floor(opts.maxBytes ?? TRANSCRIPT_MAX_BYTES_DEFAULT));
   const size = statSync(path).size;
 
@@ -284,8 +289,10 @@ export function parseTranscript(
     }
     // turns.length is this entry's own index in turn space (entryToTurn runs
     // just below), so a call is stamped with the turn it belongs to.
-    for (const c of entryToToolCalls(entry)) { toolCalls.push(c); toolCallTurnIndexes.push(turns.length); }
-    for (const r of entryToToolResults(entry)) toolResults.set(r.tool_use_id, r.ok);
+    if (collectToolCalls) {
+      for (const c of entryToToolCalls(entry)) { toolCalls.push(c); toolCallTurnIndexes.push(turns.length); }
+      for (const r of entryToToolResults(entry)) toolResults.set(r.tool_use_id, r.ok);
+    }
     const turn = entryToTurn(entry);
     if (turn) turns.push(turn);
   }
@@ -416,14 +423,23 @@ interface ToolCallWithId extends ToolCallRecord {
   id?: string;
 }
 
-function entryToToolCalls(entry: unknown): ToolCallWithId[] {
-  if (typeof entry !== 'object' || entry === null) return [];
+/** Shared entry-unwrapping prelude for the tool-call/result extractors:
+ * message.content blocks of a non-sidechain entry, or null for skipped/
+ * malformed shapes. (entryToTurn keeps its own prelude — its type/role
+ * handling diverges before the content array.) */
+function entryContentBlocks(entry: unknown): unknown[] | null {
+  if (typeof entry !== 'object' || entry === null) return null;
   const e = entry as Record<string, unknown>;
-  if (e.isSidechain === true) return []; // subagent traffic — skipped, same as entryToTurn
+  if (e.isSidechain === true) return null; // subagent traffic — skipped, same as entryToTurn
   const msg = e.message;
-  if (typeof msg !== 'object' || msg === null) return [];
+  if (typeof msg !== 'object' || msg === null) return null;
   const content = (msg as Record<string, unknown>).content;
-  if (!Array.isArray(content)) return [];
+  return Array.isArray(content) ? content : null;
+}
+
+function entryToToolCalls(entry: unknown): ToolCallWithId[] {
+  const content = entryContentBlocks(entry);
+  if (!content) return [];
   const calls: ToolCallWithId[] = [];
   for (const block of content) {
     if (typeof block !== 'object' || block === null) continue;
@@ -437,13 +453,8 @@ function entryToToolCalls(entry: unknown): ToolCallWithId[] {
 
 /** tool_result blocks in one entry → [{tool_use_id, ok}]. `ok` is `is_error !== true`. */
 function entryToToolResults(entry: unknown): Array<{ tool_use_id: string; ok: boolean }> {
-  if (typeof entry !== 'object' || entry === null) return [];
-  const e = entry as Record<string, unknown>;
-  if (e.isSidechain === true) return [];
-  const msg = e.message;
-  if (typeof msg !== 'object' || msg === null) return [];
-  const content = (msg as Record<string, unknown>).content;
-  if (!Array.isArray(content)) return [];
+  const content = entryContentBlocks(entry);
+  if (!content) return [];
   const out: Array<{ tool_use_id: string; ok: boolean }> = [];
   for (const block of content) {
     if (typeof block !== 'object' || block === null) continue;

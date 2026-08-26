@@ -166,6 +166,26 @@ describe('memorable_relay_health rung ladder', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  test('no_decisive_steps is the DOCUMENTED openclaw rejection: visible but ok, never a standing warn', async () => {
+    const home = tempHome();
+    try {
+      seedGbrainConfig(home, true);
+      const ev = seedEvidence(home, { backend: 'local', consent: 'read-write' });
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '' }, async () => {
+        await writeMemorableConsent();
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ ts: 't1', session_id: 's', ok: false, reason: 'no_decisive_steps' }) + '\n');
+        const c = await buildMemorableRelayCheck();
+        // A rung that is known-red for the whole openclaw cohort (name-only
+        // capture) would train operators to ignore the ladder.
+        expect(c.status).toBe('ok');
+        expect(c.message).toContain('no_decisive_steps');
+        expect(c.details?.reason).toBe('expected_openclaw_rejection');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   test('all green: ok with the structured details doctor --json consumers read', async () => {
     const home = tempHome();
     try {

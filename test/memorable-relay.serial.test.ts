@@ -217,6 +217,20 @@ describe('codex lane (session-end hook, --harness codex)', () => {
     expect((await pollMarker(marker, 1))).toContain('record --session cdx-disc');
   });
 
+  test('a NEWEST-mtime discovery guess never feeds the relay (it can be a different, still-running session)', async () => {
+    await optInFully();
+    const { marker } = stubRelay();
+    const { store } = codexStore('some-other-live-session');
+    // Payload names a session with NO matching rollout filename AND no
+    // transcript_path: discovery falls back to newest-mtime — a guess. The
+    // local corpus is still written; the receipt + relay are skipped.
+    const stdin = JSON.stringify({ session_id: 'cdx-ghost', transcript_path: null, cwd: '/w', hook_event_name: 'SessionEnd', reason: 'other' });
+    await runHook(['session-end', '--harness', 'codex'], { stdin, write: sink().write, transcriptRoot: store, spawnPush: () => {} });
+    expect(await readSessionReceiptsTail(10)).toHaveLength(0);
+    await new Promise((r) => setTimeout(r, 300)); // give a buggy spawn time to write
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('a rollout OUTSIDE the codex root is refused by confinement — no receipt', async () => {
     await optInFully();
     const { marker } = stubRelay();

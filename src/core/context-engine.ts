@@ -961,12 +961,27 @@ export function createGBrainContextEngine(ctx: {
     // never change the checkpoint's status. cfg was loaded fresh THIS call,
     // so `gbrain config set …enabled false` applies on the next compaction
     // without a gateway restart (GBRAIN_MEMORABLE, an env, needs one).
-    // This lane never trims the relay file and defers the receipts-file
-    // rewrite when the host's compact() deadline is near — appends only
-    // inside a latency-sensitive callback.
+    // This lane NEVER compacts the receipts file — the hook lane is the ONE
+    // compactor of session-receipts.jsonl
+    // (same single-rewriter rule as the relay-file trim: two processes doing
+    // read-filter-rename can drop each other's receipts; an append racing a
+    // rename loses at most its own line, the accepted class). It also skips
+    // the block entirely once the host's compact() deadline has fired:
+    // everything below (tail read, PATH walk, spawn) is work delaying the
+    // banked return.
     try {
       const hb = await import('./context/hook-heartbeat.ts');
-      if ((await hb.memorableGateAllowed(cfg)).allowed) {
+      if (!deadlineHit() && (await hb.memorableGateAllowed(cfg)).allowed) {
+        // Entropy parity with the hook lane [red-team]: the segment file was
+        // vendor-scanned only — its rendering feeds the Cathedral-5 ledger
+        // hash and cannot change — but the relay child derives its egress
+        // task line from that text. Re-scan with highEntropy and REFUSE the
+        // relay when it finds anything the vendor pass missed (fail-closed;
+        // the next compaction window re-evaluates).
+        const scan = await import('./secret-scan.ts');
+        if (scan.redactFindings(rendered.text, { highEntropy: true }).redactions.length > 0) {
+          throw new Error('entropy_hit'); // caught below — receipt+relay skipped, checkpoint unaffected
+        }
         // Same span rule as the hook lane: windowTurns is a suffix of
         // tail.turns, so calls are filtered to the window's origin.
         const startTurnIndex = tail.turns.length - windowTurns.length;
@@ -984,7 +999,12 @@ export function createGBrainContextEngine(ctx: {
           // an unscanned payload can never reach the receipt on this lane.
           tool_calls_json: toolCallsJson,
           secret_scan_ok: true,
-        }, { skipReceiptsCompaction: deadlineHit() });
+          // trimRelayFile here too: an openclaw-ONLY host has no session-end
+          // hook lane, and without a trimmer the child-appended relay file
+          // grows forever behind the bounded tail read. Concurrent trims from
+          // both lanes converge (newest-keeping, tmp+rename); the residual
+          // loss window stays the single in-flight append.
+        }, { skipReceiptsCompaction: true, trimRelayFile: true }); // hook lane stays the ONE receipts compactor
       }
     } catch { /* receipt is additive — never fails the checkpoint */ }
 

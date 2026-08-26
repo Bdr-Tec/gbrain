@@ -388,6 +388,40 @@ describe('tool calls carry their turn position', () => {
     for (const i of p.toolCallTurnIndexes) expect(Number.isInteger(i)).toBe(true);
   });
 
+  test('collectToolCalls:false skips collection entirely — turns unchanged, no tool data retained', () => {
+    const p = parseTranscript(fixture(), { collectToolCalls: false });
+    expect(p.toolCalls).toEqual([]);
+    expect(p.toolCallTurnIndexes).toEqual([]);
+    expect(p.turns.length).toBe(parseTranscript(fixture()).turns.length);
+  });
+
+  test('tool_result joins to its call by tool_use_id: ok mirrors is_error, internal id stripped', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-join-'));
+    tmp = dir;
+    const line = (o: unknown) => JSON.stringify(o);
+    const p = join(dir, 'j.jsonl');
+    writeFileSync(p, [
+      line({ type: 'assistant', message: { role: 'assistant', content: [
+        { type: 'tool_use', id: 'ok-1', name: 'Bash', input: { command: 'true' } },
+        { type: 'tool_use', id: 'bad-1', name: 'Bash', input: { command: 'false' } },
+        { type: 'tool_use', id: 'orphan-1', name: 'Read', input: { file_path: '/x' } },
+      ] } }),
+      // Results arrive in a LATER line than their calls — the join is post-parse.
+      line({ type: 'user', message: { role: 'user', content: [
+        { type: 'tool_result', tool_use_id: 'ok-1', content: 'fine' },
+        { type: 'tool_result', tool_use_id: 'bad-1', is_error: true, content: 'boom' },
+      ] } }),
+    ].join('\n') + '\n', { mode: 0o600 });
+    const r = parseTranscript(p);
+    expect(r.toolCalls).toHaveLength(3);
+    expect(r.toolCalls[0]).toEqual({ name: 'Bash', input: { command: 'true' }, result: { ok: true } });
+    expect(r.toolCalls[1]).toEqual({ name: 'Bash', input: { command: 'false' }, result: { ok: false } });
+    // No matching result seen → result omitted, never guessed.
+    expect(r.toolCalls[2]).toEqual({ name: 'Read', input: { file_path: '/x' } });
+    // The transcript-internal tool_use_id never reaches the public shape.
+    expect(JSON.stringify(r.toolCalls)).not.toContain('ok-1');
+  });
+
   test('indexes are non-decreasing and bounded by the turn count', () => {
     const p = parseTranscript(fixture());
     const idx = p.toolCallTurnIndexes;

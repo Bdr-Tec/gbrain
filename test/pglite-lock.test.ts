@@ -383,6 +383,19 @@ describe('pglite-lock peekLock (pure read, no side effects)', () => {
     expect(existsSync(join(TEST_DIR, '.gbrain-lock'))).toBe(false);
   });
 
+  test('a lock file that parses but has no usable pid reads as HELD (unprovable ≠ free, #2348)', () => {
+    // Erring the other way corrupted catalogs: a holder whose liveness cannot
+    // be proven must be treated as alive. This branch currently rides on
+    // isProcessAlive's invalid-pid handling — pinned here so a future cleanup
+    // of that function cannot silently flip peekLock to not-held.
+    const lockDir = join(TEST_DIR, '.gbrain-lock');
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'lock'), JSON.stringify({ acquired_at: 123, command: 'gbrain serve', subcommand: 'serve' }));
+    const result = peekLock(TEST_DIR);
+    expect(result.held).toBe(true);
+    expect(result.pid).toBeUndefined();
+  });
+
   test('live holder, serve subcommand → held, isServe true, pid reported', async () => {
     const lock = await acquireLock(TEST_DIR);
     try {

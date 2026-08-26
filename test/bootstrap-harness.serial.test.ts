@@ -25,7 +25,7 @@
 import { describe, test, expect } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   applyHarness,
@@ -227,6 +227,13 @@ describe('full apply', () => {
     const toml = readFileSync(f.codexConfig, 'utf8');
     expect(toml).toContain(CODEX_TOML_BLOCK_BEGIN);
     expect(toml).toContain(`bearer_token = "${TOKEN_A}"`);
+    // Harness-lane codex hooks: hooks.json written beside the TARGET's
+    // config.toml (never the ambient global), trust entry in the same toml.
+    const hooksJson = readFileSync(join(dirname(f.codexConfig), 'hooks.json'), 'utf8');
+    expect(hooksJson).toContain('hook session-end --harness codex');
+    expect(hooksJson).not.toContain('GBRAIN_SOURCE');
+    expect(toml).toContain('gbrain:codex-hooks-trust');
+    expect(toml).toContain('trusted_hash');
 
     const settings = readJson(f.userSettings);
     expect((settings.permissions as { allow: string[] }).allow).toEqual(['mcp__gbrain']);
@@ -390,6 +397,13 @@ describe('--remove', () => {
     expect((after.permissions as { allow: string[] }).allow).toEqual(['Bash(ls:*)']);
     expect(after.hooks).toBeUndefined();
     expect(readFileSync(f.codexConfig, 'utf8')).toBe('');
+    // The codex SessionEnd hook arm is gone too — removeHarness strips the
+    // group from hooks.json beside the target config (file may remain, empty
+    // of our entry, or the description-only cleanup deleted it).
+    const hooksAfterPath = join(dirname(f.codexConfig), 'hooks.json');
+    if (existsSync(hooksAfterPath)) {
+      expect(readFileSync(hooksAfterPath, 'utf8')).not.toContain('hook session-end --harness codex');
+    }
   });
 
   test('not-found counts as removed [F2]; url-mismatch skipped with a note [C8]', async () => {

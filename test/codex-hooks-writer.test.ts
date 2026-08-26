@@ -4,10 +4,10 @@
  * trusted_hash is listed and silently never executed).
  *
  * The load-bearing properties: fail-closed on an unparseable hooks.json,
- * strip-ours-then-APPEND so foreign groups' trust indexes never shift,
- * idempotent re-runs, foreign trust entries preserved byte-for-byte outside
- * the managed block, refusal on a foreign definition of our exact table key,
- * and clean removal of exactly what we wrote.
+ * fresh-install APPEND + re-run REPLACE-IN-PLACE so foreign groups' trust
+ * indexes never shift, idempotent re-runs, foreign trust entries preserved
+ * byte-for-byte outside the managed block, refusal on a foreign definition
+ * of our table key, and clean removal of exactly what we wrote.
  */
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -155,6 +155,90 @@ describe('buildCodexSessionEndCommand', () => {
   test('a path needing quoting stays intact through the $0 seam', () => {
     const cmd = buildCodexSessionEndCommand("/opt/my tools/gbrain");
     expect(cmd).toContain("'/opt/my tools/gbrain'");
-    expect(cmd).toContain('"$0" hook session-end --harness codex');
+    expect(cmd).toContain('"$GBRAIN_BIN" hook session-end --harness codex');
+  });
+
+  test('the TOP level is a single sh -c invocation ($SHELL may be fish/csh — only /bin/sh parses the POSIX script)', () => {
+    const cmd = buildCodexSessionEndCommand('/usr/local/bin/gbrain');
+    expect(cmd.startsWith("sh -c '")).toBe(true);
+    // the bin rides as the outer sh's $0, referenced (never re-quoted) inside
+    expect(cmd.endsWith(' /usr/local/bin/gbrain')).toBe(true);
+    expect(cmd).toContain('GBRAIN_BIN="$0"');
+  });
+});
+
+describe('trust-hash golden vector', () => {
+  test('pins the 0.147.0-verified canonical recipe against silent drift', () => {
+    // Captured from the recipe proven live against codex 0.147.0 (the
+    // observation-run hook actually fired under this identity shape). Any
+    // change to canonicalJson, the identity fields, async:false, or the 3s
+    // timeout fails HERE instead of shipping machine-wide silent non-capture.
+    expect(codexTrustHash('golden-fixed-command --x')).toBe(
+      'sha256:352b9ab177175c5d6e83c83f2bb3f42187e0791647292bd43291fa7122ac3cc4',
+    );
+  });
+});
+
+describe('re-run with foreign groups AFTER ours (the index-shift class)', () => {
+  test('replaces in place: the foreign index and OUR trust key both survive, no refusal', () => {
+    const first = writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    expect(first.trustKey).toBe(`${hooksPath}:session_end:0:0`);
+    // User appends their own group AFTER ours and trusts it at index 1.
+    const doc = readHooks();
+    doc.hooks!.SessionEnd!.push({ hooks: [{ command: 'user-tool --own' }] });
+    writeFileSync(hooksPath, JSON.stringify(doc, null, 2));
+    const userTrust = `[hooks.state.${JSON.stringify(`${hooksPath}:session_end:1:0`)}]\ntrusted_hash = "sha256:user-owned"\n`;
+    writeFileSync(configPath, readFileSync(configPath, 'utf8') + userTrust);
+
+    const rerun = writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    expect(rerun.ok).toBe(true); // NOT a foreign_trust_entry refusal of the user's own valid entry
+    expect(rerun.trustKey).toBe(`${hooksPath}:session_end:0:0`); // ours stayed at its index
+    const after = readHooks();
+    expect(after.hooks!.SessionEnd!).toHaveLength(2);
+    expect(after.hooks!.SessionEnd![0]!.hooks[0]!.command).toContain('hook session-end --harness codex');
+    expect(after.hooks!.SessionEnd![1]!.hooks[0]!.command).toBe('user-tool --own'); // foreign index unshifted
+    // The user's own trust entry survives byte-for-byte outside our block.
+    expect(readFileSync(configPath, 'utf8')).toContain('sha256:user-owned');
+  });
+
+  test('a TOML-variant foreign header for OUR key is still refused (tolerant guard, not byte-exact)', () => {
+    writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    // Strip our managed block, then hand-write the same key with extra
+    // whitespace — the pre-fix byte-exact guard missed this spelling and the
+    // append produced a duplicate table (a hard TOML parse error in codex).
+    removeCodexHooks({ hooksPath, configPath });
+    const variant = `[ hooks.state.${JSON.stringify(`${hooksPath}:session_end:0:0`)} ]\ntrusted_hash = "sha256:foreign"\n`;
+    writeFileSync(configPath, variant, { mode: 0o600 });
+    const res = writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('foreign_trust_entry');
+  });
+});
+
+describe('removeCodexHooks description hygiene', () => {
+  test('deletes the description only when it is byte-identical to ours', () => {
+    writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    removeCodexHooks({ hooksPath, configPath });
+    expect(readHooks().description).toBeUndefined();
+  });
+
+  test('a user-authored description survives removal', () => {
+    writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    const doc = readHooks();
+    doc.description = 'my own hooks file';
+    writeFileSync(hooksPath, JSON.stringify(doc, null, 2));
+    removeCodexHooks({ hooksPath, configPath });
+    expect(readHooks().description).toBe('my own hooks file');
+  });
+
+  test('removal warns when foreign groups sat after ours (their trust indexes shift)', () => {
+    writeCodexHooks({ gbrainBin: BIN, hooksPath, configPath });
+    const doc = readHooks();
+    doc.hooks!.SessionEnd!.push({ hooks: [{ command: 'user-tool --own' }] });
+    writeFileSync(hooksPath, JSON.stringify(doc, null, 2));
+    const res = removeCodexHooks({ hooksPath, configPath });
+    expect(res.removed).toBe(true);
+    expect(res.notes.join(' ')).toContain('shifted');
+    expect(readHooks().hooks!.SessionEnd![0]!.hooks[0]!.command).toBe('user-tool --own');
   });
 });

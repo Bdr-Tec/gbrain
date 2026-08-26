@@ -85,8 +85,11 @@ export interface ParsedCodexTranscript extends ParsedTranscript {
  */
 export function parseCodexHookTranscript(
   path: string,
-  opts: { maxBytes?: number } = {},
+  opts: { maxBytes?: number; collectToolCalls?: boolean } = {},
 ): ParsedCodexTranscript {
+  // Same contract as parseTranscript's collectToolCalls: the data exists only
+  // for the memorable receipt, so the gate-off default path skips it.
+  const collectToolCalls = opts.collectToolCalls !== false;
   const budget = Math.max(1, Math.floor(opts.maxBytes ?? TRANSCRIPT_MAX_BYTES_DEFAULT));
   const size = statSync(path).size;
   let raw: string;
@@ -145,8 +148,10 @@ export function parseCodexHookTranscript(
         // the receipt writer's span filter shares the corpus's origin. No
         // `result`: 0.147.0 persists no success flag on *_output rows and an
         // inferred ok would be a lie (see mapCodexLine).
-        toolCalls.push({ name: mapped.name, input: mapped.input });
-        toolCallTurnIndexes.push(turns.length);
+        if (collectToolCalls) {
+          toolCalls.push({ name: mapped.name, input: mapped.input });
+          toolCallTurnIndexes.push(turns.length);
+        }
         break;
       case 'boundary':
         boundaryTurnIndexes.push(turns.length);

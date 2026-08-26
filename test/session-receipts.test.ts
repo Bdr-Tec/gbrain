@@ -11,12 +11,14 @@ import { withEnv } from './helpers/with-env.ts';
 import { statSync } from 'node:fs';
 import {
   appendSessionReceipt,
+  clampRelayCause,
   clearMemorableConsent,
   maybeTrimRelayResults,
   memorableConsentEvidence,
   memorableGateAllowed,
   recordAndRelayReceipt,
   readSessionReceiptsTail,
+  redactedToolCallsJson,
   priorRelayFailure,
   relayResultsPath,
   resolveMemorableBin,
@@ -355,7 +357,7 @@ describe('memorableGateAllowed — one gate vocabulary for hook, engine, doctor'
     try {
       await withEnv({ GBRAIN_HOME: home }, async () => {
         await writeMemorableConsent();
-        for (const v of ['0', 'false', 'off', 'no', 'FALSE', 'Off']) {
+        for (const v of ['0', 'false', 'off', 'no', 'FALSE', 'Off', 'n', 'disable', 'disabled', 'none', '0 ', ' off ']) {
           await withEnv({ GBRAIN_MEMORABLE: v }, async () => {
             expect(await memorableGateAllowed(on)).toEqual({ allowed: false, reason: 'kill_switch' });
           });
@@ -622,7 +624,7 @@ describe('memorable-relay.jsonl is bounded: tail reads + hook-lane trim', () => 
         for (let i = 0; i < 10_000; i++) rows.push(line(i, true));
         rows.push(JSON.stringify({ ts: 'last', session_id: 'newest', ok: false, reason: 'consent' }));
         writeFileSync(p, rows.join('\n') + '\n');
-        expect((await relayFileSizeOver(p, 1024 * 1024))).toBe(true);
+        expect(statSync(p).size > 1024 * 1024).toBe(true);
         expect(await priorRelayFailure()).toBe('memorable_relay_consent');
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
@@ -688,11 +690,6 @@ describe('memorable-relay.jsonl is bounded: tail reads + hook-lane trim', () => 
   });
 });
 
-/** Tiny helper: size check without importing more of fs into every test above. */
-async function relayFileSizeOver(path: string, bytes: number): Promise<boolean> {
-  return statSync(path).size > bytes;
-}
-
 describe('degrade ordering: a stale prior-run relay failure never masks current reasons', () => {
   test('priorRelayFailure is appended LAST in degradeReasons, and its cause is clamped', async () => {
     const home = tempHome();
@@ -716,5 +713,71 @@ describe('degrade ordering: a stale prior-run relay failure never masks current 
         expect(res.degradeReasons[1]).toBe('memorable_relay_failed'); // clamped, and last
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('redactedToolCallsJson — the one artifact that leaves the machine', () => {
+  test('a quoted secret inside a Bash command redacts (JSON escaping must not defeat the scanner)', async () => {
+    // Red-team verified regression: scanning the SERIALIZED JSON let
+    // `export DB_PASSWORD="…"` ship verbatim, because JSON escapes the inner
+    // quotes (\") and the backslash breaks the pattern. Leaves are redacted
+    // raw, before serialization.
+    const out = await redactedToolCallsJson(
+      [{ name: 'Bash', input: { command: 'export DB_PASSWORD="K9fjq2LmX0pQ7rTz" && ./run.sh' } }],
+      [0],
+      0,
+    );
+    expect(out).not.toContain('K9fjq2LmX0pQ7rTz');
+    expect(out).toContain('REDACTED');
+    expect(out).toContain('./run.sh'); // surrounding command survives
+  });
+
+  test('unquoted assignments and nested structures redact too; span filter still applies', async () => {
+    const out = await redactedToolCallsJson(
+      [
+        { name: 'Bash', input: { command: 'echo SMTP_PASSWORD=Ab3xK9mQ2pR7sT1vW4yZ8bC5dE6f' } },
+        { name: 'Edit', input: { nested: { list: ['api_key: Ab3xK9mQ2pR7sT1vW4yZ8bC5dE6f'] } } },
+        { name: 'Read', input: { file_path: '/pre-span/should-not-appear' } },
+      ],
+      [5, 6, 2],
+      4, // span starts at turn 4 — the Read call (turn 2) is filtered out
+    );
+    expect(out).not.toContain('Ab3xK9mQ2pR7sT1vW4yZ8bC5dE6f');
+    expect((out.match(/REDACTED/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    expect(out).not.toContain('/pre-span/should-not-appear');
+  });
+});
+
+describe('per-receipt harness scope-binding (consent never stretches over an undisclosed lane)', () => {
+  test('an opencode-stamped receipt is refused before the relay: no receipt, typed degrade', async () => {
+    const home = tempHome();
+    try {
+      await withEnv({ GBRAIN_HOME: home }, async () => {
+        const res = await recordAndRelayReceipt({
+          session_id: 'oc-sess',
+          harness: 'opencode',
+          corpus_path: '/tmp/oc.txt',
+          content_hash: 'oc-1',
+          turn_count: 1,
+          workspace_root: '/repo',
+          tool_calls_json: '[]',
+          secret_scan_ok: true,
+        });
+        expect(res.recorded).toBe(false);
+        expect(res.degradeReasons).toEqual(['memorable_harness_undisclosed']);
+        expect(await readSessionReceiptsTail(5)).toHaveLength(0);
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+});
+
+describe('clampRelayCause — the composite heartbeat reason stays inside 48 chars', () => {
+  test('32-char cause kept; 33-char cause clamps to failed (prefix is 16 chars)', () => {
+    const c32 = 'a'.repeat(32);
+    expect(clampRelayCause(c32)).toBe(c32);
+    expect(`memorable_relay_${clampRelayCause(c32)}`.length).toBe(48);
+    expect(clampRelayCause('a'.repeat(33))).toBe('failed');
+    expect(clampRelayCause('<script>bad')).toBe('failed');
+    expect(clampRelayCause(undefined)).toBe('failed');
   });
 });

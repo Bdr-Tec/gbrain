@@ -151,7 +151,11 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
         saveConfig(cfg);
         console.log(`Unset ${key} (file plane) — disclosure consent revoked`);
       } else {
-        console.error(`Config key not found: ${key}`);
+        // The stamp was still cleared above — deliberate: the CLI's full-file
+        // config rewrites can drop the flag while the stamp survives, and an
+        // orphaned stamp would let a later out-of-band re-enable skip the
+        // disclosure. Unset always revokes; say so even on the miss.
+        console.error(`Config key not found: ${key} (disclosure consent revoked regardless)`);
         process.exit(1);
       }
       return;
@@ -273,7 +277,12 @@ export async function runConfig(engine: BrainEngine, args: string[]) {
               // Skillpack trust-prompt posture: a non-interactive session
               // cannot consent on the operator's behalf. Nothing was written.
               console.error('[config] non-interactive session and no --yes: refusing to enable a third-party relay without explicit consent. Nothing was written.');
-              console.error('[AGENT] Relay this to your operator: run `gbrain config set integrations.memorable.enabled true` in a terminal and answer the prompt (or append --yes to consent non-interactively).');
+              // Deliberately does NOT mention --yes: this line is printed INTO
+              // agent sessions (the very sessions whose tool calls the relay
+              // egresses), and advertising the non-interactive bypass here
+              // hands a prompt-injected agent the exact string that flips the
+              // gate. Operators find --yes in the docs.
+              console.error('[AGENT] Relay this to your operator: run `gbrain config set integrations.memorable.enabled true` in a terminal and answer the prompt.');
               process.exit(1);
             }
             const { promptYesNo } = await import('../core/confirm-prompt.ts');

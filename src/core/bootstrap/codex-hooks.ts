@@ -32,20 +32,24 @@
  *    reads no GBRAIN_SOURCE at all, so the ambient-env tier [EV4] cannot
  *    misattribute this lane either.
  *  - Index sensitivity (documented residual): the trust key embeds our
- *    group's index in the SessionEnd array. We always strip-ours-then-APPEND
- *    (so writing never shifts a FOREIGN group's index and never breaks the
- *    user's own trust entries); if the user later reorders/removes their own
- *    groups, OUR entry can go stale — the hook then silently stops, which is
- *    exactly what doctor's codex-wired-but-zero-receipts rung exists to name.
+ *    group's index in the SessionEnd array. A fresh install APPENDS last; a
+ *    re-run REPLACES our group IN PLACE — so writing never shifts a FOREIGN
+ *    group's index (append-after-strip would shift every foreign group that
+ *    sat after ours, silently staling THEIR trust entries). If the user later
+ *    reorders/removes their own groups, OUR entry can go stale — the hook
+ *    then silently stops, which is exactly what doctor's
+ *    codex-wired-but-zero-receipts rung exists to name. Uninstall does shift
+ *    foreign groups after ours (array removal is inherently index-shifting);
+ *    removeCodexHooks says so in its notes when that happens.
  *  - Version sensitivity: all of this is pinned to 0.147.0 with no upstream
  *    stability promise — re-run the observation gate on codex version bumps.
  */
 
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { chmodSync, copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { atomicWriteTextFile } from './atomic-write.ts';
 import type { HostSpecTarget } from './host-specs.ts';
-import { codexConfigPath, codexHooksPath } from './host-specs.ts';
+import { CODEX_HOOK_EVENTS, codexConfigPath, codexHooksPath } from './host-specs.ts';
 
 export const CODEX_HOOKS_SPEC_TARGET: HostSpecTarget = {
   id: 'codex-hooks-2026-08',
@@ -73,6 +77,24 @@ const GBRAIN_DESCRIPTION =
 const TRUST_BLOCK_BEGIN = '# --- gbrain:codex-hooks-trust (managed block — do not edit; gbrain bootstrap rewrites it) ---';
 const TRUST_BLOCK_END = '# --- /gbrain:codex-hooks-trust ---';
 
+/** The hooks.json event key this lane manages — derived from host-specs so
+ * the declared event list and the writer can never drift apart. */
+const SESSION_END_EVENT: string = CODEX_HOOK_EVENTS[0];
+
+/** Strip the managed trust block (and trailing blank lines) out of a
+ * config.toml text — THE one implementation for write and remove, so a
+ * marker or CRLF-handling change can never half-propagate. */
+function stripTrustBlock(text: string): { remainder: string[]; crlf: boolean; found: boolean } {
+  const crlf = text.includes('\r\n');
+  const lines = text.replace(/\r\n/g, '\n').split('\n');
+  const begin = lines.indexOf(TRUST_BLOCK_BEGIN);
+  const end = lines.indexOf(TRUST_BLOCK_END);
+  const found = begin >= 0 && end > begin;
+  const remainder = found ? [...lines.slice(0, begin), ...lines.slice(end + 1)] : [...lines];
+  while (remainder.length > 0 && remainder[remainder.length - 1]!.trim() === '') remainder.pop();
+  return { remainder, crlf, found };
+}
+
 /** SessionEnd is hard-clamped to 3s by codex; declare exactly that. */
 const SESSION_END_TIMEOUT_SEC = 3;
 
@@ -83,15 +105,20 @@ function shellQuote(arg: string): string {
 
 /**
  * The SessionEnd command: capture stdin, detach a grandchild, exit within the
- * 3s budget. `sh -c '…' <bin>` passes the gbrain binary as $0, so the inner
- * single-quoted script needs no nested quoting of the path.
+ * 3s budget. Codex hands this string to `$SHELL -lc`, and $SHELL can be a
+ * non-POSIX shell (fish, csh) where bare `var=value` assignments and `$( )`
+ * are syntax errors — so the TOP level is a single `sh -c '<script>' <bin>`
+ * invocation and only /bin/sh ever parses the POSIX script. The outer sh's
+ * $0 is the gbrain binary (no nested quoting of the path); the grandchild
+ * inherits GBRAIN_BIN/GBRAIN_PAYLOAD through the env-prefix assignments.
  */
 export function buildCodexSessionEndCommand(gbrainBin: string): string {
-  return (
-    't="$(mktemp)"; cat >"$t"; GBRAIN_PAYLOAD="$t" nohup sh -c ' +
-    `'"$0" ${CODEX_HOOK_OWNERSHIP_TOKEN} <"$GBRAIN_PAYLOAD"; rm -f "$GBRAIN_PAYLOAD"' ` +
-    `${shellQuote(gbrainBin)} >/dev/null 2>&1 &`
-  );
+  const script =
+    't="$(mktemp)"; cat >"$t"; GBRAIN_PAYLOAD="$t" GBRAIN_BIN="$0" nohup sh -c ' +
+    `'"$GBRAIN_BIN" ${CODEX_HOOK_OWNERSHIP_TOKEN} <"$GBRAIN_PAYLOAD"; rm -f "$GBRAIN_PAYLOAD"' >/dev/null 2>&1 &`;
+  // Embed the script into an outer single-quoted argument: ' → '\'' works
+  // identically in POSIX shells AND fish (escaped-quote outside quotes).
+  return `sh -c '${script.replace(/'/g, "'\\''")}' ${shellQuote(gbrainBin)}`;
 }
 
 /** Compact JSON with recursively-sorted keys — codex's canonical form. */
@@ -165,17 +192,26 @@ export function writeCodexHooks(opts: {
     }
   }
   const hooks = (doc.hooks && typeof doc.hooks === 'object' && !Array.isArray(doc.hooks) ? doc.hooks : {}) as NonNullable<HooksJson['hooks']>;
-  const sessionEnd = Array.isArray(hooks.SessionEnd) ? hooks.SessionEnd : [];
-  const foreign = sessionEnd.filter((g) => !isOurGroup(g));
-  const replacedPrior = foreign.length !== sessionEnd.length;
+  const sessionEnd = Array.isArray(hooks[SESSION_END_EVENT]) ? hooks[SESSION_END_EVENT]! : [];
   const command = buildCodexSessionEndCommand(opts.gbrainBin);
   const ourGroup = { hooks: [{ type: 'command', command, timeout: SESSION_END_TIMEOUT_SEC }] };
-  const nextSessionEnd = [...foreign, ourGroup];
-  const ourGroupIndex = nextSessionEnd.length - 1;
+  // Fresh install appends LAST; a re-run replaces our group IN PLACE — a
+  // strip-then-append would shift every foreign group sitting after ours
+  // down one index, silently staling THEIR codex trust entries.
+  const priorIdx = sessionEnd.findIndex(isOurGroup);
+  const replacedPrior = priorIdx >= 0;
+  const withoutDupes = sessionEnd.filter((g, i) => i === priorIdx || !isOurGroup(g));
+  if (withoutDupes.length !== sessionEnd.length) {
+    notes.push(
+      `${sessionEnd.length - withoutDupes.length} duplicate gbrain SessionEnd group(s) dropped — foreign groups after them shift down; re-trust any of your own entries that stop firing.`,
+    );
+  }
+  const nextSessionEnd = replacedPrior ? withoutDupes.map((g, i) => (i === priorIdx ? ourGroup : g)) : [...withoutDupes, ourGroup];
+  const ourGroupIndex = replacedPrior ? priorIdx : nextSessionEnd.length - 1;
   const nextDoc: HooksJson = {
     ...doc,
     ...(doc.description === undefined ? { description: GBRAIN_DESCRIPTION } : {}),
-    hooks: { ...hooks, SessionEnd: nextSessionEnd },
+    hooks: { ...hooks, [SESSION_END_EVENT]: nextSessionEnd },
   };
 
   // 2. config.toml trust entry — OUR entries live inside the managed marker
@@ -189,21 +225,20 @@ export function writeCodexHooks(opts: {
       return { ok: false, hooksPath, configPath, reason: 'config_toml_unreadable', notes: [`${configPath} exists but is unreadable — fix permissions and re-run.`] };
     }
   }
-  const crlf = configText.includes('\r\n');
-  const lines = configText.replace(/\r\n/g, '\n').split('\n');
-  const begin = lines.indexOf(TRUST_BLOCK_BEGIN);
-  const end = lines.indexOf(TRUST_BLOCK_END);
-  const remainder = begin >= 0 && end > begin ? [...lines.slice(0, begin), ...lines.slice(end + 1)] : [...lines];
-  // Foreign-ownership guard: our exact table header outside our block would
-  // become a duplicate-table hard parse error that bricks codex entirely.
+  const { remainder, crlf } = stripTrustBlock(configText);
+  // Foreign-ownership guard: our table header outside our block would become
+  // a duplicate-table hard parse error that bricks codex entirely. TOLERANT
+  // match — any [hooks.state.…] header line mentioning our key, in either
+  // TOML string spelling and any interior whitespace, not just our exact
+  // JSON.stringify rendering.
   const header = `[hooks.state.${JSON.stringify(trustKey)}]`;
-  if (remainder.some((l) => l.trim() === header)) {
+  const headerRe = /^\s*\[\s*hooks\s*\.\s*state\s*[.\]]/;
+  if (remainder.some((l) => headerRe.test(l) && l.includes(trustKey))) {
     return {
       ok: false, hooksPath, configPath, reason: 'foreign_trust_entry',
-      notes: [`${configPath} already defines ${header} outside the gbrain-managed block — refusing to double-define it (a hard TOML parse error). Remove that entry and re-run.`],
+      notes: [`${configPath} already defines a [hooks.state] entry for ${trustKey} outside the gbrain-managed block — refusing to double-define it (a hard TOML parse error). Remove that entry and re-run.`],
     };
   }
-  while (remainder.length > 0 && remainder[remainder.length - 1]!.trim() === '') remainder.pop();
   const block = [
     TRUST_BLOCK_BEGIN,
     `${header}`,
@@ -215,15 +250,11 @@ export function writeCodexHooks(opts: {
   // 3. Write both, hooks.json first (a trust entry for a missing file is
   //    inert; a hooks file without trust is silently skipped — either partial
   //    state is safe, this order just minimizes the skipped window).
-  mkdirSync(dirname(hooksPath), { recursive: true });
-  mkdirSync(dirname(configPath), { recursive: true });
   if (existed) {
     copyFileSync(hooksPath, `${hooksPath}.bak`);
     chmodSync(`${hooksPath}.bak`, 0o600);
   }
-  const tmpHooks = `${hooksPath}.tmp-${process.pid}`;
-  writeFileSync(tmpHooks, JSON.stringify(nextDoc, null, 2) + '\n', { mode: 0o600 });
-  renameSync(tmpHooks, hooksPath);
+  atomicWriteTextFile(hooksPath, JSON.stringify(nextDoc, null, 2) + '\n', { freshMode: 0o600, forceMode: 0o600 });
 
   if (configText) {
     // DISTINCT suffix: config.toml.bak is the MCP block writer's rollback
@@ -233,11 +264,14 @@ export function writeCodexHooks(opts: {
     copyFileSync(configPath, `${configPath}.hooks.bak`);
     chmodSync(`${configPath}.hooks.bak`, statSync(configPath).mode & 0o777);
   }
-  const tmpCfg = `${configPath}.tmp-${process.pid}`;
-  writeFileSync(tmpCfg, crlf ? nextConfig.replace(/\n/g, '\r\n') : nextConfig, { mode: 0o600 });
-  renameSync(tmpCfg, configPath);
+  atomicWriteTextFile(configPath, crlf ? nextConfig.replace(/\n/g, '\r\n') : nextConfig, { freshMode: 0o600 });
 
-  if (foreign.length > 0) notes.push(`${foreign.length} foreign SessionEnd group(s) preserved; gbrain's entry appended last so their trust-state indexes never shift.`);
+  const foreignCount = nextSessionEnd.length - 1;
+  if (foreignCount > 0) {
+    notes.push(
+      `${foreignCount} foreign SessionEnd group(s) preserved at their original indexes (${replacedPrior ? "gbrain's entry replaced in place" : "gbrain's entry appended last"}) so their trust-state entries never go stale.`,
+    );
+  }
   return { ok: true, hooksPath, configPath, trustKey, replacedPrior, notes };
 }
 
@@ -260,15 +294,32 @@ export function removeCodexHooks(opts: { hooksPath?: string; configPath?: string
     try {
       const doc = JSON.parse(readFileSync(hooksPath, 'utf8')) as HooksJson;
       const hooks = (doc.hooks ?? {}) as NonNullable<HooksJson['hooks']>;
-      const sessionEnd = Array.isArray(hooks.SessionEnd) ? hooks.SessionEnd : [];
+      const sessionEnd = Array.isArray(hooks[SESSION_END_EVENT]) ? hooks[SESSION_END_EVENT]! : [];
+      const ourIdx = sessionEnd.findIndex(isOurGroup);
       const foreign = sessionEnd.filter((g) => !isOurGroup(g));
+      let changed = false;
       if (foreign.length !== sessionEnd.length) {
+        changed = true;
+        if (foreign.length > 0) hooks[SESSION_END_EVENT] = foreign;
+        else delete hooks[SESSION_END_EVENT];
+        // Removal is inherently index-shifting for anything AFTER ours — the
+        // user's own trust entries for those groups go stale (silent
+        // non-execution). Say so instead of leaving them to find out.
+        if (ourIdx >= 0 && ourIdx < sessionEnd.length - 1) {
+          notes.push(
+            `${sessionEnd.length - 1 - ourIdx} of your own SessionEnd group(s) sat after gbrain's — their index just shifted down, so codex will treat their config.toml trust entries as stale. Re-trust them (codex prompts on next run) or update the [hooks.state] indexes.`,
+          );
+        }
+      }
+      // Same only-if-we-wrote-it discipline as the writer: the description is
+      // deleted only when it is byte-identical to ours.
+      if (doc.description === GBRAIN_DESCRIPTION) {
+        delete doc.description;
+        changed = true;
+      }
+      if (changed) {
         removed = true;
-        if (foreign.length > 0) hooks.SessionEnd = foreign;
-        else delete hooks.SessionEnd;
-        const tmp = `${hooksPath}.tmp-${process.pid}`;
-        writeFileSync(tmp, JSON.stringify({ ...doc, hooks }, null, 2) + '\n', { mode: 0o600 });
-        renameSync(tmp, hooksPath);
+        atomicWriteTextFile(hooksPath, JSON.stringify({ ...doc, hooks }, null, 2) + '\n', { freshMode: 0o600, forceMode: 0o600 });
       }
     } catch {
       notes.push(`${hooksPath} does not parse — left untouched (nothing gbrain wrote survives a hand-mangled file; remove it manually).`);
@@ -277,18 +328,11 @@ export function removeCodexHooks(opts: { hooksPath?: string; configPath?: string
 
   if (existsSync(configPath)) {
     const raw = readFileSync(configPath, 'utf8');
-    const crlf = raw.includes('\r\n');
-    const lines = raw.replace(/\r\n/g, '\n').split('\n');
-    const begin = lines.indexOf(TRUST_BLOCK_BEGIN);
-    const end = lines.indexOf(TRUST_BLOCK_END);
-    if (begin >= 0 && end > begin) {
+    const { remainder, crlf, found } = stripTrustBlock(raw);
+    if (found) {
       removed = true;
-      const remainder = [...lines.slice(0, begin), ...lines.slice(end + 1)];
-      while (remainder.length > 0 && remainder[remainder.length - 1]!.trim() === '') remainder.pop();
       const next = remainder.length ? remainder.join('\n') + '\n' : '';
-      const tmp = `${configPath}.tmp-${process.pid}`;
-      writeFileSync(tmp, crlf ? next.replace(/\n/g, '\r\n') : next, { mode: statSync(configPath).mode & 0o777 });
-      renameSync(tmp, configPath);
+      atomicWriteTextFile(configPath, crlf ? next.replace(/\n/g, '\r\n') : next, { forceMode: statSync(configPath).mode & 0o777 });
     }
   }
   return { hooksPath, configPath, removed, notes };

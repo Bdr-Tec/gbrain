@@ -79,7 +79,7 @@ function ensureDir0700(dir: string): string {
   return dir;
 }
 
-export async function hooksTelemetryDir(): Promise<string> {
+async function hooksTelemetryDir(): Promise<string> {
   const home = await resolveHome();
   ensureDir0700(join(home, 'integrations'));
   return ensureDir0700(join(home, 'integrations', 'hooks'));
@@ -189,7 +189,9 @@ export async function readHeartbeatTail(n: number): Promise<HookHeartbeatEntry[]
 // before anything reaches these functions.
 //
 // Nothing here runs unless the operator has turned the integration on; see
-// the single `memorableAllowed` gate in commands/hook.ts.
+// memorableGateAllowed below — the ONE gate shared by all three consumers
+// (commands/hook.ts, the openclaw lane in context-engine.ts, and the doctor
+// check in commands/doctor/checks/integrations-memorable.ts).
 
 export const SESSION_RECEIPTS_MAX_LINES = 2000;
 
@@ -264,8 +266,15 @@ export interface RelayResult {
 export async function priorRelayFailure(): Promise<string | null> {
   const last = await lastRelayResult();
   if (!last || last.ok) return null;
-  const cause = typeof last.reason === 'string' && /^[A-Za-z0-9_.:-]{1,48}$/.test(last.reason) ? last.reason : 'failed';
-  return `memorable_relay_${cause}`;
+  return `memorable_relay_${clampRelayCause(last.reason)}`;
+}
+
+/** Clamp the relay child's UNTRUSTED self-reported cause to a short machine
+ * code — 32 chars, so the 16-char 'memorable_relay_' prefix keeps every
+ * composite inside the heartbeat's 48-char reason-code bound. THE one clamp
+ * for both consumers (priorRelayFailure above and the doctor check). */
+export function clampRelayCause(reason: unknown): string {
+  return typeof reason === 'string' && /^[A-Za-z0-9_.:-]{1,32}$/.test(reason) ? reason : 'failed';
 }
 
 /**
@@ -327,9 +336,10 @@ export async function lastRelayResult(): Promise<RelayResult | null> {
 //
 // The memorable child appends one outcome line per relay run and never trims;
 // unbounded growth here is the same defect class the receipts file had. Trim
-// discipline: (a) ONLY the session-end hook lane trims (the openclaw
-// context-engine lane is append/read-only), so two gbrain writers can never
-// race each other's tmp+rename; (b) prefer trimming when the file is
+// discipline: (a) BOTH capture lanes may trim (an openclaw-only host has no
+// hook lane, and a single-trimmer rule would leave it unbounded) — trims are
+// newest-keeping and converge, so a trim racing a trim ends in one valid
+// result; (b) prefer trimming when the file is
 // mtime-stale (no child wrote recently), but FORCE the trim at a hard ceiling
 // regardless — on busy machines (per-compaction openclaw traffic) the mtime
 // never goes stale and the file would otherwise grow forever behind the
@@ -345,6 +355,25 @@ const RELAY_FORCE_TRIM_BYTES = 8 * 1024 * 1024;
 const RELAY_TRIM_TARGET_BYTES = 512 * 1024;
 const RELAY_TRIM_STALE_MS = 60_000;
 
+/** Keep the newest complete lines under a byte budget (always at least the
+ * newest one, even alone over budget) and tmp+rename the result into place —
+ * THE one trim implementation for the relay file and the receipts file. */
+function trimJsonlToNewest(p: string, lines: string[], opts: { targetBytes: number; maxLines?: number }): void {
+  const kept: string[] = [];
+  let bytes = 0;
+  const maxLines = opts.maxLines ?? Number.POSITIVE_INFINITY;
+  for (let i = lines.length - 1; i >= 0 && kept.length < maxLines; i--) {
+    const b = Buffer.byteLength(lines[i]!, 'utf8') + 1;
+    if (bytes + b > opts.targetBytes && kept.length > 0) break;
+    kept.push(lines[i]!);
+    bytes += b;
+  }
+  kept.reverse();
+  const tmp = `${p}.tmp-${process.pid}`;
+  writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
+  renameSync(tmp, p);
+}
+
 /** Opportunistically bound memorable-relay.jsonl. Hook lane only. Never throws. */
 export async function maybeTrimRelayResults(nowMs = Date.now()): Promise<void> {
   try {
@@ -354,22 +383,9 @@ export async function maybeTrimRelayResults(nowMs = Date.now()): Promise<void> {
     const stale = nowMs - st.mtimeMs > RELAY_TRIM_STALE_MS;
     if (!stale && st.size <= RELAY_FORCE_TRIM_BYTES) return;
     const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
-    const kept: string[] = [];
-    let bytes = 0;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const b = Buffer.byteLength(lines[i]!, 'utf8') + 1;
-      if (bytes + b > RELAY_TRIM_TARGET_BYTES && kept.length > 0) break;
-      kept.push(lines[i]!);
-      bytes += b;
-    }
-    kept.reverse();
-    const tmp = `${p}.tmp-${process.pid}`;
-    writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
-    renameSync(tmp, p);
+    trimJsonlToNewest(p, lines, { targetBytes: RELAY_TRIM_TARGET_BYTES });
   } catch { /* missing file or fs refusal — a trim is never load-bearing */ }
 }
-
-const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
 
 /**
  * Byte ceiling, because the line count was never the binding constraint.
@@ -378,11 +394,12 @@ const RECEIPTS_COMPACT_CHECK_BYTES = 2 * SESSION_RECEIPTS_MAX_LINES * 80;
  * lines average 110 KB and reach 353 KB. So 3000 receipts are ~315 MB across
  * 3000 lines: comfortably under the 4000-line trigger, never compacted, and
  * re-read whole into memory on every session end (maxRSS 443 MB, oscillating
- * between ~210 MB and ~420 MB on disk in steady state). The check above fires
- * at 320 KB and then declined to act, which is the worst of both.
+ * between ~210 MB and ~420 MB on disk in steady state).
  *
- * Trimming now honours whichever limit binds first. The ceiling also bounds
- * the readFileSync itself: the file can only exceed it by one append.
+ * This ceiling is the ONLY compaction trigger: the read fires exactly when
+ * the pass will act, and it also bounds the readFileSync itself — the file
+ * can only exceed it by one append. The line budget is enforced inside the
+ * pass (kept.length), not by a separate pre-read trigger.
  */
 const RECEIPTS_MAX_BYTES = 32 * 1024 * 1024;
 /** What a compaction leaves behind, so the next append does not re-trigger it. */
@@ -424,26 +441,17 @@ export async function appendSessionReceipt(
     } catch {
       /* just appended — best effort */
     }
-    if (size > RECEIPTS_COMPACT_CHECK_BYTES) {
+    // The full read happens only when compaction will ACT (byte cap crossed).
+    // A cheaper stat-size trigger used to fire the read at ~320 KB "to check
+    // the line count", but receipt lines average ~110 KB — so every session
+    // end between 320 KB and 32 MB paid a growing readFileSync that then did
+    // nothing. The line budget is still enforced inside the pass below.
+    if (size > RECEIPTS_MAX_BYTES) {
       const lines = readFileSync(p, 'utf8').split('\n').filter((l) => l.trim().length > 0);
-      if (lines.length > 2 * SESSION_RECEIPTS_MAX_LINES || size > RECEIPTS_MAX_BYTES) {
-        // Newest first, stopping at whichever budget binds. The newest entry
-        // is always kept even if it alone exceeds the byte target — a
-        // compaction that dropped the receipt just written would break the
-        // relay it exists to feed.
-        const kept: string[] = [];
-        let bytes = 0;
-        for (let i = lines.length - 1; i >= 0 && kept.length < SESSION_RECEIPTS_MAX_LINES; i--) {
-          const b = Buffer.byteLength(lines[i]!, 'utf8') + 1;
-          if (bytes + b > RECEIPTS_TARGET_BYTES && kept.length > 0) break;
-          kept.push(lines[i]!);
-          bytes += b;
-        }
-        kept.reverse();
-        const tmp = `${p}.tmp-${process.pid}`;
-        writeFileSync(tmp, kept.join('\n') + '\n', { mode: 0o600 });
-        renameSync(tmp, p);
-      }
+      // Newest first, stopping at whichever budget binds (shared trim helper
+      // — always keeps the newest entry, since a compaction that dropped the
+      // receipt just written would break the relay it exists to feed).
+      trimJsonlToNewest(p, lines, { targetBytes: RECEIPTS_TARGET_BYTES, maxLines: SESSION_RECEIPTS_MAX_LINES });
     }
     return true;
   } catch {
@@ -461,9 +469,6 @@ export async function appendSessionReceipt(
  * most recent, and a miss here only means a duplicate is written — the
  * failure mode is the old behaviour, never a lost receipt. */
 async function lastReceiptMatches(sessionId: string, contentHash: string): Promise<boolean> {
-  // A resumed session's previous receipt is by construction among the most
-  // recent, and a miss only means a duplicate is written — the failure mode is
-  // the old behaviour, never a lost receipt.
   const lines = readJsonlTailLines(await sessionReceiptsPath());
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
@@ -622,7 +627,11 @@ export interface MemorableGate {
  * config object they already hold.
  */
 export async function memorableGateAllowed(cfg?: { integrations?: { memorable?: { enabled?: boolean } } } | null): Promise<MemorableGate> {
-  if (/^(0|false|off|no)$/i.test(process.env.GBRAIN_MEMORABLE ?? '')) return { allowed: false, reason: 'kill_switch' };
+  // Trimmed + a wide negative net: an emergency kill switch must not fail
+  // open on near-miss spellings ('n', 'disabled', a trailing space).
+  if (/^(0|false|off|no|n|disable|disabled|none)$/i.test((process.env.GBRAIN_MEMORABLE ?? '').trim())) {
+    return { allowed: false, reason: 'kill_switch' };
+  }
   if (cfg?.integrations?.memorable?.enabled !== true) return { allowed: false, reason: 'disabled' };
   if (!(await memorableConsentValid())) return { allowed: false, reason: 'disclosure_missing' };
   return { allowed: true };
@@ -679,7 +688,22 @@ export function memorableConsentEvidence(): MemorableConsentEvidence {
 export async function redactedToolCallsJson(calls: ToolCallRecord[], turnIndexes: number[], startTurnIndex: number): Promise<string> {
   const scan = await import('../secret-scan.ts');
   const span = calls.filter((_c, i) => (turnIndexes[i] ?? 0) >= startTurnIndex);
-  return scan.redactFindings(JSON.stringify(span), { highEntropy: true }).text;
+  // Redact each RAW string leaf, then serialize — never the other way round.
+  // Scanning the serialized JSON silently missed quoted secrets: JSON escapes
+  // the quotes inside string values (\"), the backslash falls outside the
+  // scanner's value charset, and `export DB_PASSWORD="…"` inside a Bash
+  // command shipped verbatim (red-team verified). Post-redaction re-scan of
+  // the serialized form stays as a belt-and-braces pass for anything that
+  // only becomes pattern-shaped after serialization.
+  const redactLeaves = (v: unknown): unknown => {
+    if (typeof v === 'string') return scan.redactFindings(v, { highEntropy: true }).text;
+    if (Array.isArray(v)) return v.map(redactLeaves);
+    if (typeof v === 'object' && v !== null) {
+      return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, val]) => [k, redactLeaves(val)]));
+    }
+    return v;
+  };
+  return scan.redactFindings(JSON.stringify(redactLeaves(span)), { highEntropy: true }).text;
 }
 
 export interface RelayReceiptResult {
@@ -707,6 +731,15 @@ export async function recordAndRelayReceipt(
   const degradeReasons: string[] = [];
   let priorFail: string | null = null;
   try {
+    // Scope-binding enforcement at the RECEIPT level, not just the stamp
+    // level: the accepted disclosure enumerates MEMORABLE_CAPTURE_HARNESSES,
+    // so a receipt from any other lane (e.g. an operator-wired opencode
+    // session-end riding the claude capture spec) must never reach the relay
+    // — consent never silently stretches over egress the user was not shown.
+    if (!MEMORABLE_CAPTURE_HARNESSES.includes(entry.harness)) {
+      degradeReasons.push('memorable_harness_undisclosed');
+      return { recorded: false, degradeReasons };
+    }
     if (opts.trimRelayFile) await maybeTrimRelayResults();
     const recorded = await appendSessionReceipt(entry, { skipCompaction: opts.skipReceiptsCompaction });
     if (!recorded) return { recorded: false, degradeReasons };

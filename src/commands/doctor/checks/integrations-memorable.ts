@@ -27,6 +27,7 @@ import { loadConfig } from '../../../core/config.ts';
 import { CODEX_HOOK_OWNERSHIP_TOKEN } from '../../../core/bootstrap/codex-hooks.ts';
 import { codexHooksPath } from '../../../core/bootstrap/host-specs.ts';
 import {
+  clampRelayCause,
   lastRelayResult,
   memorableConsentEvidence,
   memorableGateAllowed,
@@ -95,7 +96,21 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
       details.last_relay_ok = last.ok;
     }
     if (last && !last.ok) {
-      const cause = typeof last.reason === 'string' && /^[A-Za-z0-9_.:-]{1,48}$/.test(last.reason) ? last.reason : 'failed';
+      const cause = clampRelayCause(last.reason);
+      if (cause === 'no_decisive_steps') {
+        // The DOCUMENTED openclaw rejection (name-only traces, refused until
+        // argument capture lands). Visible but ok — a rung that is known-red
+        // for a whole supported cohort trains operators to ignore it, masking
+        // the real failures the ladder exists to catch.
+        return {
+          name: NAME,
+          status: 'ok',
+          message:
+            'memorable relay running; last trace was refused as not replayable (no_decisive_steps) — expected for ' +
+            'openclaw name-only capture until argument capture lands. See the capture matrix in docs/memorable-agents.md.',
+          details: { ...details, reason: 'expected_openclaw_rejection' },
+        };
+      }
       return {
         name: NAME,
         status: 'warn',
@@ -122,7 +137,7 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
         name: NAME,
         status: 'warn',
         message:
-          'codex SessionEnd hook is wired but no codex-harness receipt has ever landed — codex hooks fail ' +
+          'codex SessionEnd hook is wired but no codex-harness receipt appears in the recent receipt window — codex hooks fail ' +
           'SILENTLY when their config.toml trust entry is stale/missing. Re-run `gbrain bootstrap hooks --harness codex` to re-trust.',
         details: { ...details, reason: 'codex_hooks_never_fired' },
       };
