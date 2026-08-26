@@ -84,6 +84,12 @@ function normalizeRow(r: Record<string, unknown>): OpenLoopRow {
   const ev = r.evidence;
   return {
     ...(r as unknown as OpenLoopRow),
+    // postgres.js returns BIGSERIAL/BIGINT as STRINGS ("1") while PGLite
+    // returns numbers — without coercion, id equality (`loops show <id>`,
+    // close-by-id checks) silently fails on real Postgres only.
+    id: Number(r.id),
+    fact_id: r.fact_id === null || r.fact_id === undefined ? null : Number(r.fact_id),
+    confidence: Number(r.confidence ?? 1),
     evidence:
       typeof ev === 'string'
         ? (JSON.parse(ev) as LoopEvidence[])

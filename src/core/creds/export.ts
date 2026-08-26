@@ -95,8 +95,18 @@ export function importBundle(bundle: EncryptedBundle, passphrase: string): Bundl
     // scryptSync's default maxmem (32MB) is too small for N=2^15 r=8.
     maxmem: 128 * 1024 * 1024,
   });
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(bundle.iv, 'base64'));
-  decipher.setAuthTag(Buffer.from(bundle.tag, 'base64'));
+  // authTagLength pins the FULL 16-byte GCM tag: without it, Node accepts
+  // attacker-supplied tags truncated to as little as 4 bytes, weakening the
+  // bundle's forgery resistance. The explicit length check keeps the error
+  // message honest (a truncated tag is tampering, not a wrong passphrase).
+  const tag = Buffer.from(bundle.tag, 'base64');
+  if (tag.length !== 16) {
+    throw new Error('Not a gbrain credential bundle (or an unsupported version).');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(bundle.iv, 'base64'), {
+    authTagLength: 16,
+  });
+  decipher.setAuthTag(tag);
   let plaintext: Buffer;
   try {
     plaintext = Buffer.concat([

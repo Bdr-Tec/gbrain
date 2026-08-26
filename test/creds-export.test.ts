@@ -107,4 +107,16 @@ describe('exportBundle / importBundle', () => {
       'Not a gbrain credential bundle',
     );
   });
+
+  it('a truncated GCM auth tag is refused as tampering, never verified', () => {
+    // Without authTagLength pinned at 16, Node would accept tags truncated to
+    // as little as 4 bytes — an attacker-crafted bundle with a short tag gets
+    // a drastically easier forgery target. Refused with the bundle-shape
+    // error (tampering), not the wrong-passphrase one.
+    const bundle = exportBundle({ credentials: [ENTRY], clients: [CLIENT] }, PASSPHRASE);
+    const shortTag = Buffer.from(bundle.tag, 'base64').subarray(0, 12).toString('base64');
+    expect(() => importBundle({ ...bundle, tag: shortTag }, PASSPHRASE)).toThrow(
+      'Not a gbrain credential bundle',
+    );
+  });
 });
