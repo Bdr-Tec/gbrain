@@ -110,7 +110,11 @@ consent screen, before Google kills the tokens at day 7). Once you publish
 the app to Production, record it — `gbrain google connect --consent-state
 production` — so the weekly-expiry warning stops firing. Less-common flags
 (`--via`, `--no-browser`, `--no-probe`, `--purge-client`, and setup's
-`--history-days` / `--sync-budget-ms`): `gbrain google --help`.
+`--history-days` / `--sync-budget-ms`): `gbrain google --help`. The `--via`
+hosted fast path (a verified OAuth client brokering consent, tokens still
+stored locally) is feature-gated off until the relay server exists; its full
+design lives at
+[`docs/designs/HOSTED_OAUTH_RELAY.md`](../designs/HOSTED_OAUTH_RELAY.md).
 
 Sync freshness is honest by construction: a sweep only stamps the source as
 synced when it fully succeeds, so `gbrain waiting`'s staleness gate can trust
