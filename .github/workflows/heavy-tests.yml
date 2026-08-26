@@ -210,7 +210,7 @@ jobs:
       HERMES_VERSION: "0.20.0"
       HERMES_GIT_TAG: "v2026.8.3"
       HERMES_GIT_COMMIT: "3c27eb6234bf91b8ceee9e9071591b31e9b148cb"
-      HERMES_INSTALL_SHA256: "868ed3a91e0fabbff6d7418b3ede82bf4833652ec4e77196a42852fb35a9e5b9"
+      HERMES_INSTALL_SHA256: "c0380bc1f78d3d662a77663ce20cc17e14cbc4bec35e61ab7a33bac5f3afed2d"
       GBRAIN_REAL_HERMES_E2E: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -693,8 +693,11 @@ jobs:
           tail -40 claude-plugin-door.txt
           if [ "$EXIT" -ne 0 ]; then exit "$EXIT"; fi
           pass_count=$(grep -Eo '[0-9]+ pass' claude-plugin-door.txt | tail -1 | grep -Eo '^[0-9]+' || true)
-          if [ "${pass_count:-0}" -ne 1 ]; then
-            echo "::error::claude plugin door expected exactly 1 passing INSTALL test, summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
+          # 2 = validate+install + the persona-variant install added by
+          # v0.46.18.0 (#4251) — that commit grew the VALIDATE describe without
+          # re-pinning here, which is what turned the nightly red.
+          if [ "${pass_count:-0}" -ne 2 ]; then
+            echo "::error::claude plugin door expected exactly 2 passing INSTALL tests, summary shows '${pass_count:-none}' — refusing to go green (re-pin deliberately when tests are added)" >&2
             exit 1
           fi
 
