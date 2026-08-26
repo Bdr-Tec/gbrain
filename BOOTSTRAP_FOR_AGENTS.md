@@ -140,12 +140,17 @@ registration only with `--mcp-even-if-plugin`.
      `--no-hooks`, or `gbrain bootstrap uninstall`). MCP scope is NOT asked here —
      `hooks` consumes the MCP_SCOPE answer recorded during the interview.
    - Codex: registers MCP (`codex mcp add`) and relies on the AGENTS.md protocol —
-     say plainly that Codex gets pull-based context, not per-turn push.
+     say plainly that Codex gets pull-based context, not per-turn push. It ALSO
+     installs a SessionEnd capture hook (user-global `hooks.json` + a config.toml
+     trust entry — codex hooks are silently inert without the trust pair), consent-
+     gated the same way as Claude hooks (`--no-hooks` opts out; `GBRAIN_HOOKS=0`
+     disables at runtime). Tell the human the hook is machine-global: every codex
+     session on this machine gets session-end capture, not just this repo.
      Do NOT offer an MCP scope choice: `codex mcp add` has no scope flag, so
      the registration is always user-global. State it as fact — any repo opened
      on this machine can reach the brain (read and write) through its MCP
      tools; the off-ramps are `codex mcp remove gbrain` (registration only) or
-     `gbrain bootstrap uninstall` (full teardown).
+     `gbrain bootstrap uninstall` (full teardown, hooks included).
    - opencode: writes the MCP entry directly into opencode's JSONC config (no
      CLI exec needed) and relies on the AGENTS.md protocol, which opencode loads
      natively — say plainly that opencode gets pull-based context, not per-turn

@@ -289,7 +289,9 @@ that changed shape, a harness that stopped calling our MCP server):
   keyless-`init` → interview → render → `gbrain bootstrap hooks --harness codex`
   path (executing the real `codex mcp add` into a hermetic `~/.codex/config.toml`),
   asserts the rendered `AGENTS.md` carries the Gate-3 brain-first pull protocol
-  (gbrain does not wire Codex hooks yet, so the pull protocol is its per-turn seam), then
+  (the pull protocol is codex's per-turn seam; the SessionEnd capture hook is
+  wired separately, and the door asserts its trust-gated hooks.json + config.toml
+  pair landed), then
   spends one live `codex exec` turn to prove real codex → gbrain MCP → brain →
   a seeded, brain-only fact (falling back to a shell `gbrain query` if headless
   stdio-MCP is unavailable).
