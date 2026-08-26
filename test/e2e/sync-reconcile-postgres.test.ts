@@ -52,8 +52,14 @@ beforeEach(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'gbrain-3583-pg-home-'));
   process.env.GBRAIN_HOME = tmpHome;
   await engine.executeRaw(`DELETE FROM pages WHERE source_id = 'default'`);
+  // local_path must reset too: each test mkRepo()s a fresh directory, and the
+  // v0.46.25.0 registered-directory guard refuses to advance last_commit for
+  // a repo that is neither the registered dir nor within its tree — leaving
+  // the second test's quiet run at 'first_sync' instead of 'up_to_date'.
+  // (Latent since authoring: this file skips without DATABASE_URL, so the
+  // guard interaction never fired until a real-Postgres run.)
   await engine.executeRaw(
-    `UPDATE sources SET last_sync_at = NULL, last_commit = NULL WHERE id = 'default'`,
+    `UPDATE sources SET last_sync_at = NULL, last_commit = NULL, local_path = NULL WHERE id = 'default'`,
   );
 });
 
