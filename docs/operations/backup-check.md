@@ -9,7 +9,7 @@ right now, could I recreate my agent?"**
 
 | Asset | How it's checked | Warn condition |
 |---|---|---|
-| Source repos (every non-archived source with a `local_path`) | local git probes: `git remote get-url origin`, `rev-list --count`, `status --porcelain` — deduped by git root, capped at 500 roots/run | no `origin` remote (`no_remote`) |
+| Source repos (every non-archived source with a `local_path`) | local git probes: `git remote get-url origin`, `rev-list --count`, `status --porcelain` — deduped by git root, capped at 500 roots/run | no `origin` remote, OR origin configured but never pushed (`origin/<branch>` unresolvable — the half-completed `git remote add` state). Both report `no_remote`. |
 | Bootstrap workspace (skills/, memory/, brain/, identity) | file plane: the install receipt's `repo_url` + the per-root push-status files | receipt without `repo_url` → warn; a failing background push → flagged row only (the push-failure banner owns that alarm) |
 | DB-only brain (pages exist, nothing git-backed) | page count + absence of any git-backed asset | warn on PGLite (total loss on disk failure); info on managed Postgres (DB survives, but isn't the git system of record) |
 | `db_only` storage-tier pages | `gbrain.yml` per source | info row — dump with `gbrain export --dir <backup-dir>` to somewhere OUTSIDE the gitignored dirs (`--restore-only` is the wrong direction for a backup) |
@@ -46,16 +46,24 @@ channels — all bounded by the shared nag budget:
    no notice: a remote thin client's token scope doesn't grant the host's
    backup posture, and a remote-triggered display must not spend the local
    notice budget.
-4. **CLI stderr** on most `gbrain <cmd>` invocations (serve/hook/jobs/call and
-   the check's own surfaces are excluded; `--quiet` and
+4. **CLI stderr** on most `gbrain <cmd>` invocations (serve/hook/jobs/call,
+   the upgrade surfaces (`upgrade`/`post-upgrade`/`check-update`/`self-upgrade`),
+   and the check's own surfaces are excluded; `--quiet` and
    `GBRAIN_SKIP_STARTUP_HOOKS` silence it). The machine marker
    `BACKUP_LOCAL_ONLY <n>` prints on non-TTY stderr for agents, plus a one-line
    human sentence.
 5. **OpenClaw context engine** (one ⚠ line, read-only against the budget).
 
+Two more surfaces spend the same budget without being passive nags: `gbrain
+backup status` records an impression when it prints a warn verdict (you just
+saw the full table — the passive channels go quiet for 24h), and the advisor
+collector records one when it emits backup findings.
+
 Nag budget: at most one impression per 24h across channels, at most 3 per
-channel per month, at most 3 recorded impressions per month TOTAL. Fixing the
-repo (or a new month) re-arms it; ignoring it goes quiet until next month.
+channel per month **per verdict** (a changed verdict — a repo fixed or a new
+one gone local-only — re-arms the per-channel count mid-month), at most 3
+recorded impressions per month TOTAL. Fixing the repo (or a new month) re-arms
+it; ignoring it goes quiet until next month.
 
 ## Commands
 
@@ -64,7 +72,11 @@ gbrain backup status [--json]   # verdict + per-asset table + fix commands + rec
 gbrain backup check  [--json]   # force a recompute now
 ```
 
-Exit codes: 0 ok / 1 warn / 2 usage error. `status` answers from the cache when it's ok,
+Exit codes: 0 ok / 1 warn / 2 usage error. Two forced-0 paths: the global
+`--quiet` flag (the detached-spawn mode) always exits 0, and a disabled check
+(`backup.check_enabled=false` / `GBRAIN_BACKUP_CHECK=0`) exits 0 even on a
+cached warn — automation reading exit codes sees the off switch as all-clear,
+never a stale failure. `status` answers from the cache when it's ok,
 recomputes when it's warn or stale, and falls back to the cached verdict with
 a note when a running `gbrain serve` holds the PGLite lock (the serve process
 refreshes the verdict itself within a day). The `--json` payload includes a
@@ -82,13 +94,15 @@ bounds it).
 
 ```
 gbrain config set backup.check_enabled false        # off (file plane)
-gbrain config set backup.check_interval_days 30     # default 30, min 1
+gbrain config set backup.check_interval_days 30     # default 30; set rejects values < 1
 GBRAIN_BACKUP_CHECK=0                               # env kill switch (everything)
-GBRAIN_BACKUP_CHECK_DAYS=<n>                        # env interval override (wins over config; min 1)
+GBRAIN_BACKUP_CHECK_DAYS=<n>                        # env interval override (wins over config)
 ```
 
+Interval values below 1 or non-numeric (env or a hand-edited config file) fall
+back to the 30-day default — `DAYS=0` never means "recompute every dispatch".
 Disabling silences compute AND every render channel, including a stale warn
-cache. `GBRAIN_HOOKS=0` already silences the hook channels;
+cache, and forces `backup status` to exit 0. `GBRAIN_HOOKS=0` already silences the hook channels;
 `GBRAIN_SKIP_STARTUP_HOOKS` silences the CLI rail.
 
 ## State files (machine-owned, under `~/.gbrain/`)

@@ -32,7 +32,7 @@ What you'd see on an unbacked brain:
 
 | Asset | State | Fix printed |
 |---|---|---|
-| a knowledge repo with no `origin` | warn (flips the verdict) | `git remote add origin <url> && git push -u origin <branch>`, then `gbrain sources harden <id>` |
+| a knowledge repo with no `origin` (or a remote configured but never pushed) | warn (flips the verdict) | `git remote add origin <url> && git push -u origin <branch>`, then `gbrain sources harden <id>` |
 | workspace with no private repo | warn | `gbrain bootstrap repo` |
 | pages that live only in the local database | warn on PGLite, info on managed Postgres | `gbrain sources add` / `gbrain bootstrap repo` |
 | `db_only` storage-tier pages | info | `gbrain export --dir <backup-dir>` |
@@ -78,8 +78,8 @@ warns about a partial migration:
   atomic writes, fail-open reads); bounded nag ledger at `~/.gbrain/backup-nag-state.json`
   (schema `gbrain-backup-nag-v1`: 24h cross-channel dampener, per-channel ceiling 3 per
   month+verdict fingerprint, global cap 3 recorded impressions per month, spawn debounce);
-  compute sweeps sources deduped by git root (`hasOriginRemote`/`aheadCount`/
-  `isWorkingTreeDirty`, execFile array args, capped at 500 roots with a logged skip count,
+  compute sweeps sources deduped by git root (`originRemoteState`/`hasRemoteTrackingRef`/
+  `aheadCount`/`isWorkingTreeDirty`, execFile array args, capped at 500 roots with a logged skip count,
   event-loop yields between probes), the bootstrap receipt + push statuses, `db_only`
   tiering, and the DB-only-brain worst case (warn on PGLite, info with different copy on
   managed Postgres via `engine.kind`). Degraded computes (engine unreadable mid-run) are
@@ -100,20 +100,23 @@ warns about a partial migration:
   a CLI stderr rail with the `BACKUP_LOCAL_ONLY <n>` machine marker (`src/cli.ts`); an
   OpenClaw context line that consults the budget read-only (`src/core/context-engine.ts`).
 - **Config keys** `backup.check_enabled` and `backup.check_interval_days` (file-plane,
-  routed by `gbrain config set/unset`; interval clamps to >=1 day) + env switches
-  `GBRAIN_BACKUP_CHECK=0` and `GBRAIN_BACKUP_CHECK_DAYS`.
+  routed by `gbrain config set/unset`; `config set` rejects intervals below 1 day) + env
+  switches `GBRAIN_BACKUP_CHECK=0` and `GBRAIN_BACKUP_CHECK_DAYS` (invalid or sub-1 env
+  values fall back to the 30-day default).
 - **Docs**: `docs/operations/backup-check.md` (coverage table, channels, nag budget, state
   files, privacy rules, fix recipes, recovery drill), two `docs/architecture/KEY_FILES.md`
   entries, a `backup-check` row in the bootstrap HEARTBEAT template (ships disabled), and
   monthly-cadence notes in the `gbrain-advisor` and `maintain` skills.
-- **Tests**: seven new suites (~150 tests) covering the nag budget lifecycle, compute
+- **Tests**: eight new suites (~150 tests) covering the nag budget lifecycle, compute
   classification against real git fixtures, the trust pins (HTTP/unset transport never
   probes git; stdio-only serve refresher; single-flight), remote aggregate privacy, the
   CLI lock fallback, fix-path cache invalidation, and config routing.
 
 ### Changed
 - `gbrain sources push`, `gbrain sources harden`, and `gbrain bootstrap repo` now drop the
-  cached backup verdict on success, so a fixed repo stops warning immediately.
+  cached backup verdict on success, so a fixed repo stops warning immediately (`sources push`
+  only when the cache carried a warn or failing/unpushed work — a routine healthy push
+  leaves an ok cache alone).
 - `gbrain sync` completion piggybacks a stale-only backup recompute (trusted local engine
   holder; dry runs stay pure).
 - `src/core/workspace-push.ts` exports `aheadCount`; `InstallReceipt` gains the typed
