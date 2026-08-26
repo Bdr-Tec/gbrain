@@ -7760,3 +7760,82 @@ covers DEAD logs; go-forward capture beyond Claude Code is deliberately absent.
   High blast radius: touches every read op; do NOT attempt until both
   sweeps (read-side, landed; write-side, P2 above) are in place as safety
   nets. Effort: L. Depends on: the P2 write-side sweep.
+
+## DB-availability loop follow-ups (filed 2026-08-25, engine-detection / db-repair / prefer-postgres wave)
+
+- [ ] **P3 — `_meta.brain_health` one-shot channel after a successful repair.**
+  Today a recovered brain announces itself only via the serve-side
+  `tools/list_changed` + the `[gbrain-serve] RECOVERED` stderr line; the AGENT
+  facing the brain learns nothing in-band. Add a one-shot `_meta.brain_health`
+  block to the FIRST successful op response after a degraded→recovered
+  transition (and after a `db-repair` `outcome:'applied'` receipt newer than
+  the session start), so the agent can tell the operator "the brain is back,
+  here's what was fixed" without polling `engine status`. One-shot per
+  transition, never a steady-state field. Effort: S.
+- [ ] **P3 — full sslmode handling beyond the ssl_required rewrite.**
+  db-repair's `?sslmode=require` append is the repo's FIRST sslmode support
+  and deliberately minimal. Missing: parsing/validating an existing `sslmode`
+  param (a URL already carrying `sslmode=disable` gets a conflicting
+  `&sslmode=require` appended — last-wins works on libpq semantics but is
+  ugly), the other modes (`verify-ca`/`verify-full` need CA material we can't
+  conjure), and surfacing the effective ssl posture in `engine status`'s
+  pooler block. Effort: S-M.
+- [ ] **P3 — finish TODOS #1231: doctor `connection_routing` check.**
+  `ConnectionManager.describeMode()` and `healthCheck()` now have their first
+  real caller (`engine status --probe` reports `mode` + `pool_latency_ms`),
+  which retires the "zero-caller outside tests" blocker in the original
+  entry. Remaining: the actual doctor check naming the routing mode,
+  kill-switch state, and per-pool probe latency (the four files whose
+  comments reference the check as if it existed still do). Effort: S.
+- [ ] **P3 — generalize the classify→marker→skill→repair loop to other
+  subsystems.** The pattern (data-driven reason table + append-only union,
+  pre-redacted remediation single-homed in the classifier, a stderr/envelope
+  marker literal-matched by a bundled skill, an engine-free repair command
+  with tiered flag-gated consent) is proven for Postgres access; the
+  embedding-provider/gateway lane has the same "gbrain goes dark with a raw
+  error" failure class (429/401/quota/base-url misconfig). Sketch: a future
+  `GBRAIN_AI_ACCESS <reason>` marker + `gbrain ai-repair`-shaped diagnose
+  surface. Do NOT bolt AI reasons onto `PgAccessReason` — separate union,
+  separate marker prefix. Effort: M-L.
+- [ ] **P3 — TODOS #1050 (keyless cold-home serve) × `--prefer-postgres`.**
+  Degraded-mode serve now covers the "configured brain, dead DB" half of
+  #1050 (serve boots and self-heals instead of dying), but the NO-CONFIG
+  cold-home half still exits inside `connectEngine` before serve's degraded
+  catch (deliberate — there is nothing to reconnect TO). When keyless
+  cold-home boot lands, wire it through the same ladder entry
+  (`gbrain init --prefer-postgres`) so a first-boot harness lands on the
+  best available engine instead of hardcoding PGLite, and re-check the
+  init-ladder's existing-config refusal still holds (a cold-home boot must
+  not become a config-overwrite vector). Effort: M (blocked on #1050's own
+  design). Follow-up from v0.46.31.0.
+- [ ] **P3 — scope the CLI bottom-handler's GBRAIN_DB_ACCESS marker to
+  engine-originated errors.** The top-level rejection handler classifies
+  EVERY uncaught error, and connection-class patterns (ECONNREFUSED,
+  getaddrinfo, ETIMEDOUT) also match failures from non-DB dependencies (a
+  webhook fetch, an Ollama endpoint, a remote MCP URL) — a false marker
+  sends agents into the db-repair skill. Bounded today by the forged-marker
+  defense (db-repair probes healthy → exit 0 no-op), but it burns an agent
+  loop and the printed `Run: gbrain db-repair` can displace the real
+  remediation. Fix shape: tag errors at the engine/connect layer (a symbol
+  or error subclass) and emit the marker only for tagged errors; untagged
+  errors keep redaction but drop the marker. Effort: M. Follow-up from
+  v0.46.31.0 (adversarial review).
+- [ ] **P3 — mount-targeted db-repair.** v1 deliberately refuses when the
+  brain axis resolves to a non-host mount (a mount outage must never rewrite
+  host config) and prints the mount's diagnosis + recipe. The follow-up:
+  `gbrain db-repair --brain <mount-id>` that probes and repairs against the
+  MOUNT's own config entry (rewrites edit the mounts registry row, receipts
+  key on the mount's brain_id — the recurrence check already sums per
+  brain_id, so no reader change). Effort: M.
+- [ ] **P3 — marker coverage for remaining in-command CLI catch sites.** The
+  connect-time choke point (top-level rejection handler + the no-config exit)
+  plus sync's checkpoint-dead abort cover the dominant "gbrain went dark"
+  class. Embed's HARD DB failures propagate to the bottom choke point (the
+  CLI wrapper's `failures > 0` verdict is per-chunk soft failures — mostly
+  embedding-provider-side, which the Postgres classifier deliberately does
+  not own; that lane is the `GBRAIN_AI_ACCESS` generalization entry above).
+  Other in-command catches still print legacy text with no `GBRAIN_DB_ACCESS`
+  marker when their failure classifies as a DB-access reason (candidates:
+  doctor's non-fallback DB errors mid-run, extract/import bulk loops, jobs
+  work loop). Sweep the catch sites, route message text through the
+  redactors, and emit the marker where `isDbAccessFailure` says so. Effort: M.

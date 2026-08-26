@@ -1186,14 +1186,20 @@ rung prints a one-line note and falls through; only the PGLite floor is terminal
 
 | Rung | Uses | Needs |
 |---|---|---|
-| 1. env URL | an existing Postgres | `GBRAIN_DATABASE_URL` (or `DATABASE_URL`, subject to the cwd-.env guard) |
+| 1. env URL | an existing Postgres. `GBRAIN_DATABASE_URL` is stated intent and adopted as-is; a bare `DATABASE_URL` (deploy platforms point it at the APP's database) is adopted only when the target is already a gbrain brain or holds no tables at all | `GBRAIN_DATABASE_URL` (or `DATABASE_URL`, subject to the cwd-.env guard + the content check) |
 | 2. Supabase discovery | Management-API project discovery (10s timeouts; the candidate URL is connect-probed before anything persists; discovery only — project CREATION stays dashboard guidance) | `SUPABASE_ACCESS_TOKEN` + `SUPABASE_DB_PASSWORD` (+ `SUPABASE_PROJECT_REF` on multi-project accounts) |
 | 3. local Postgres | an already-running local server (detection-only; `CREATE DATABASE gbrain` needs explicit `--allow-create-db`) | `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` env vars set, or `--local-postgres` |
-| 4. docker | gbrain's own container `gbrain-postgres` (image `pgvector/pgvector:pg16`, port 5434, `--restart unless-stopped`; idempotent reuse recovers credentials via `docker inspect`; gbrain never stops or removes it) | explicit `--allow-docker` |
+| 4. docker | gbrain's own container `gbrain-postgres` (image `pgvector/pgvector:pg16`, loopback-only port 5434, data on the named `gbrain-pgdata` volume, `--restart unless-stopped`; idempotent reuse recovers credentials via `docker inspect`; refuses to share a container/volume that already holds a brain this home's config doesn't record; gbrain never stops or removes it) | explicit `--allow-docker` |
 | 5. PGLite floor | zero-config fallback, with an upgrade-later note (`gbrain migrate --to supabase`) | nothing |
 
-`--json` emits `{status, engine, ladder_rung, url_source}` so a scripted install
-can branch on the outcome. The access token is never persisted, logged, or echoed.
+The ladder REFUSES to run over an already-configured brain — rung choice is
+environment-dependent, so a re-run during an outage could silently repoint a
+healthy Postgres brain at the PGLite floor. Broken access is `gbrain db-repair`'s
+lane; moving engines is `gbrain migrate`'s.
+
+`--json` emits `{status, engine, ladder_rung, url_source}` as the ONLY stdout
+content so a scripted install can `| jq` it. The access token is never
+persisted, logged, or echoed.
 Tradeoff to know before choosing: Postgres brains get MCP tools every session plus
 the pull protocol, but NOT the PGLite-only per-turn bootstrap hook lane (see
 `BOOTSTRAP_FOR_AGENTS.md` and the degradation matrix in `docs/guides/bootstrap.md`).
@@ -2463,11 +2469,18 @@ Management-API discovery (`SUPABASE_ACCESS_TOKEN` + `SUPABASE_DB_PASSWORD`), a
 local server (only when `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD` are set or
 `--local-postgres` is passed; `CREATE DATABASE gbrain` needs explicit
 `--allow-create-db`), or — with explicit `--allow-docker` — gbrain's own
-container `gbrain-postgres` (image `pgvector/pgvector:pg16`, host port 5434,
-`--restart unless-stopped`). gbrain starts and reuses that container but never
-stops or removes it; an existing container is reused with its REAL credentials
-recovered via `docker inspect`, never a freshly generated password. Details in
-INSTALL_FOR_AGENTS.md ("Engine preference for harness installs").
+container `gbrain-postgres` (image `pgvector/pgvector:pg16`, loopback-only
+host port 5434, data on the named `gbrain-pgdata` volume,
+`--restart unless-stopped`). The ladder REFUSES over an already-configured
+brain (re-runs during an outage must never let the PGLite floor overwrite a
+healthy Postgres config — that lane is `gbrain db-repair`), and a bare
+`DATABASE_URL` is adopted only when the target is already a gbrain brain or
+holds no tables at all (`GBRAIN_DATABASE_URL` is always stated intent).
+gbrain starts and reuses that container but never stops or removes it; an
+existing container is reused with its REAL credentials recovered via
+`docker inspect`, never a freshly generated password — and never reused when
+its database already holds a brain this home's config doesn't record.
+Details in INSTALL_FOR_AGENTS.md ("Engine preference for harness installs").
 
 ## PGLiteEngine
 
