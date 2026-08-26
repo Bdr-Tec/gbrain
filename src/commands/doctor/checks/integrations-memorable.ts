@@ -95,14 +95,18 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
       details.last_relay_ts = last.ts;
       details.last_relay_ok = last.ok;
     }
+    // The DOCUMENTED openclaw rejection (name-only traces, refused until
+    // argument capture lands) is visible but ok — a rung that is known-red
+    // for a whole supported cohort trains operators to ignore it. It is a
+    // PENDING note, not an early return: on a mixed openclaw+codex host the
+    // rejection is the persistent last-relay state, and returning here would
+    // paint the check green forever while the codex rung below has a dead
+    // trust entry to name.
+    let expectedRejection: Check | null = null;
     if (last && !last.ok) {
       const cause = clampRelayCause(last.reason);
       if (cause === 'no_decisive_steps') {
-        // The DOCUMENTED openclaw rejection (name-only traces, refused until
-        // argument capture lands). Visible but ok — a rung that is known-red
-        // for a whole supported cohort trains operators to ignore it, masking
-        // the real failures the ladder exists to catch.
-        return {
+        expectedRejection = {
           name: NAME,
           status: 'ok',
           message:
@@ -110,13 +114,14 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
             'openclaw name-only capture until argument capture lands. See the capture matrix in docs/memorable-agents.md.',
           details: { ...details, reason: 'expected_openclaw_rejection' },
         };
+      } else {
+        return {
+          name: NAME,
+          status: 'warn',
+          message: `the last memorable relay run reported failure (${cause}) — a fix becomes visible one session after it lands. \`memorable doctor\` has the child's side.`,
+          details: { ...details, reason: `memorable_relay_${cause}` },
+        };
       }
-      return {
-        name: NAME,
-        status: 'warn',
-        message: `the last memorable relay run reported failure (${cause}) — a fix becomes visible one session after it lands. \`memorable doctor\` has the child's side.`,
-        details: { ...details, reason: `memorable_relay_${cause}` },
-      };
     }
     if (!last && receipts.length > 0) {
       return {
@@ -142,6 +147,7 @@ export async function buildMemorableRelayCheck(): Promise<Check> {
         details: { ...details, reason: 'codex_hooks_never_fired' },
       };
     }
+    if (expectedRejection) return expectedRejection;
     return { name: NAME, status: 'ok', message: 'memorable relay healthy (consented, installed, last run ok)', details };
   } catch {
     return { name: NAME, status: 'warn', message: 'memorable relay state unreadable', details: { out_of_band_settable: true } };

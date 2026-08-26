@@ -234,4 +234,35 @@ describe('codex hooks wired but never fired [OV8c]', () => {
       });
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
+
+  test('mixed host: the expected openclaw rejection never masks a dead codex trust entry', async () => {
+    const home = tempHome();
+    try {
+      seedGbrainConfig(home, true);
+      const ev = seedEvidence(home, { backend: 'local', consent: 'read-write' });
+      const codexHome = join(home, 'codex-home');
+      mkdirSync(codexHome, { recursive: true });
+      writeFileSync(join(codexHome, 'hooks.json'), JSON.stringify({
+        hooks: { SessionEnd: [{ hooks: [{ type: 'command', command: 'x gbrain hook session-end --harness codex y', timeout: 3 }] }] },
+      }));
+      await withEnv({ GBRAIN_HOME: home, GBRAIN_MEMORABLE: undefined, GBRAIN_MEMORABLE_CONFIG: ev, PATH: stubBinDir(home), MEMORABLE_BIN: '', CODEX_HOME: codexHome }, async () => {
+        await writeMemorableConsent();
+        // Openclaw relays per compaction, each refused as no_decisive_steps —
+        // the PERSISTENT last-relay state on an openclaw+codex host. Codex is
+        // wired but has never produced a receipt (stale trust entry).
+        await appendSessionReceipt({ ...RECEIPT, harness: 'openclaw' });
+        const p = await relayResultsPath();
+        mkdirSync(dirname(p), { recursive: true });
+        writeFileSync(p, JSON.stringify({ ts: 't', session_id: 'oc-1', ok: false, reason: 'no_decisive_steps' }) + '\n');
+        let c = await buildMemorableRelayCheck();
+        expect(c.status).toBe('warn'); // NOT green — the codex rung must still fire
+        expect(c.details?.reason).toBe('codex_hooks_never_fired');
+        // Once a codex receipt lands, the expected-rejection note surfaces.
+        await appendSessionReceipt({ ...RECEIPT, session_id: 'cdx-2', harness: 'codex', content_hash: 'cdx-h2' });
+        c = await buildMemorableRelayCheck();
+        expect(c.status).toBe('ok');
+        expect(c.details?.reason).toBe('expected_openclaw_rejection');
+      });
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
 });
