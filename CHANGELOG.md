@@ -83,6 +83,59 @@ promised, and the context needed to respond.
 gbrain upgrade            # applies migration v142 automatically
 gbrain google setup       # connect Gmail/Calendar/Contacts → first digest
 gbrain waiting            # who is waiting on you, with receipts
+## [0.46.31.0] - 2026-08-25
+
+Chat connectors: connect a ChatGPT or Claude account and sync its conversation
+history into the brain, incrementally and on an opt-in schedule. This is the
+LIVE front end to the export-file lane the conversation-archive skill already
+covers — the fetch replaces the manual download, and everything downstream
+(secret redaction, per-provider slugging, long-session splitting, four-layer
+idempotency) is the same `gbrain transcripts ingest` pipeline. Providers are
+leaf modules on one registry, so Claude landed alongside ChatGPT and Perplexity
+is a filed next step.
+
+### Added
+- **`gbrain connectors`** — `auth` (cookie paste-in via stdin, so the secret
+  never lands in argv; a best-effort `--try-oauth` PKCE lane behind a flag),
+  `sync` (`--dry-run` / `--limit N` / `--full` / `--all` / `--background`),
+  `status`, `logout`, and `providers`. Credentials live file-plane at
+  `~/.gbrain/connectors/<provider>.json` (0600, dir 0700), are resolved
+  env-above-file with provenance, and never touch the DB, `sources.config`, the
+  config planes, or any MCP payload. The `connectors_status` / `connector_sync`
+  ops are local-only.
+- **Incremental sync** — a durable per-provider watermark in the config table
+  plus a trailing-window gap-heal, so a run fetches only what changed and an
+  edited-just-behind-the-watermark conversation still heals. The watermark
+  advances only on a fully clean run, so a partial run never leaves a silent
+  gap. Re-imports are free (content-hash idempotency).
+- **Opt-in automation** — a `connector-sync` minion job dispatched from the
+  autopilot tick when `connectors.<provider>.auto_sync` is enabled (daily by
+  default, credential- and auth-error-gated), plus a `gbrain doctor` check that
+  surfaces re-auth-needed / stalled-sync / provider-drift. `gbrain autopilot
+  --install` remains the harness-agnostic scheduler; a plain host cron line
+  works too.
+- **`chat-connectors` skill** + `docs/guides/chat-connectors.md` covering setup,
+  automation lanes, the security posture, and the fallback path when a provider
+  blocks server-side fetch.
+
+### Notes
+- These providers use each host's own web session, so a bot/anti-automation
+  challenge can block server-side fetch; the connector reports that honestly and
+  points you at the official export lane, which always works. Keep the cadence
+  polite (daily default) — you are automating requests on your own account.
+
+### To take advantage of v0.46.31.0
+
+**Say to your agent:** *"Connect my chatgpt account and pull my whole history into
+the brain"* — *"Connect my claude account"* — *"Keep my conversations synced
+automatically."* Your agent walks the cookie capture, the dry-run → sample → full
+sequence, and the opt-in schedule.
+
+Or by hand:
+```bash
+gbrain upgrade                                  # no migration — additive feature
+gbrain connectors auth chatgpt --cookie -       # paste your Cookie header, Ctrl-D
+gbrain connectors sync chatgpt --dry-run        # then --limit 5, then --full
 ```
 
 ## [0.46.30.0] - 2026-08-25
