@@ -1,0 +1,23 @@
+name: Sincronizar Fork com Upstream
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Gerar token do GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Sincronizar fork com original
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh repo sync Bdr-Tec/gbrain --source garrytan/gbrain --branch master
