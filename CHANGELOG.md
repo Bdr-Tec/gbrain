@@ -119,6 +119,8 @@ warns about a partial migration:
 - `src/core/workspace-push.ts` exports `aheadCount`; `InstallReceipt` gains the typed
   optional `repo_url` field (`src/core/bootstrap/format.ts`).
 
+## [0.46.30.0] - 2026-08-25
+
 Privacy hardening pass: the read-side privacy boundary is now guarded by a
 registry-driven sweep, so the whole class of "a new remote surface forgets
 the world-only filter" fails the build instead of shipping.
