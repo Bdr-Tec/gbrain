@@ -459,6 +459,27 @@ describe('pglite-lock PID-reuse detection', () => {
     }
   }, 15_000);
 
+  test.skipIf(!canProbe)('does NOT reap a live holder whose recorded command is an absolute path but whose cmdline shows the relative bun-run form', async () => {
+    // False-steal regression (caught by the harness-lifecycle E2E): a serve
+    // spawned as `bun run src/cli.ts serve …` reports a RELATIVE cmdline via
+    // ps, while its lock records Bun's ABSOLUTE argv[1]. The literal
+    // includes(firstToken) veto never matches and, when the checkout path
+    // carries no 'gbrain' substring, the live holder was classified as a
+    // recycled PID and its lock stolen — the thief then wrote to a second
+    // PGLite instance the live serve never sees. The basename veto
+    // ('cli.ts' appears in the cmdline) must keep the holder alive.
+    const holder = Bun.spawn(['bash', '-c', 'sleep 60; exit 0', 'bun run src/cli.ts serve --http'], { stdout: 'ignore', stderr: 'ignore' });
+    try {
+      await waitForExec(holder.pid, /cli\.ts/);
+      writeHolderAt(TEST_DIR, holder.pid, '/home/user/checkouts/brain-project/src/cli.ts serve --http', { subcommand: 'serve' });
+
+      await expect(acquireLock(TEST_DIR, { timeoutMs: 1200 })).rejects.toThrow(/already open through `gbrain serve`/);
+      expect(existsSync(join(TEST_DIR, '.gbrain-lock'))).toBe(true);
+    } finally {
+      holder.kill();
+    }
+  }, 15_000);
+
   test.skipIf(!isLinux)('does NOT reap on cmdline evidence when the lock belongs to another PID namespace', async () => {
     // #2840 class: a holder in another container shares the data dir; its
     // recorded PID maps to an unrelated process in OUR namespace. The pid_ns

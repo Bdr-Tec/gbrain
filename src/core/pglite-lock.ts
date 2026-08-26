@@ -290,6 +290,17 @@ function isPidReusedByOtherProgram(
   if (typeof recordedCommand === 'string' && recordedCommand.length > 0) {
     const firstToken = recordedCommand.trim().split(/\s+/)[0];
     if (firstToken && cmdline.includes(firstToken)) return false;
+    // False-steal hardening: the recorded first token is often an ABSOLUTE
+    // script path (Bun normalizes argv[1]) while `ps`/procfs report the
+    // spawn-time RELATIVE form (`bun run src/cli.ts serve …`), so the literal
+    // includes() above never matches and a LIVE holder gets classified as
+    // recycled — observed as a harness mint stealing a running serve's lock
+    // and writing its token to a second PGLite instance the serve never
+    // sees. Compare the token's basename too: an unrelated program that
+    // genuinely recycled the PID is no more likely to carry `cli.ts` in its
+    // argv than the full path, so precision holds.
+    const baseToken = firstToken ? firstToken.split('/').pop() : undefined;
+    if (baseToken && baseToken.length > 0 && cmdline.includes(baseToken)) return false;
   }
   return true;
 }
