@@ -13,6 +13,12 @@ conversion for it.
 
 ## Quick start
 
+**Say to your agent:** *"Connect my chatgpt account and pull my whole history into
+the brain"* — *"Connect my claude account"* — *"Keep my conversations synced
+automatically."* The chat-connectors skill walks the whole flow: cookie capture,
+dry-run → sample → full backfill, and the opt-in schedule. The commands below are
+the manual path.
+
 ```bash
 # 1. Connect (cookie paste-in is the primary lane; kept out of argv via stdin)
 gbrain connectors auth chatgpt --cookie -      # paste the Cookie header, Ctrl-D

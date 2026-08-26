@@ -44,6 +44,13 @@ is a filed next step.
   polite (daily default) — you are automating requests on your own account.
 
 ### To take advantage of v0.46.31.0
+
+**Say to your agent:** *"Connect my chatgpt account and pull my whole history into
+the brain"* — *"Connect my claude account"* — *"Keep my conversations synced
+automatically."* Your agent walks the cookie capture, the dry-run → sample → full
+sequence, and the opt-in schedule.
+
+Or by hand:
 ```bash
 gbrain upgrade                                  # no migration — additive feature
 gbrain connectors auth chatgpt --cookie -       # paste your Cookie header, Ctrl-D
