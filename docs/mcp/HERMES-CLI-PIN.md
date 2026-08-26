@@ -103,6 +103,12 @@ non-interactive. `hermes cron tick` = run due jobs once and exit. `hermes cron l
 - `HERMES_INSTALL_SHA256: "c0380bc1f78d3d662a77663ce20cc17e14cbc4bec35e61ab7a33bac5f3afed2d"`
 - Door test asserts `hermes --version` output contains `v$HERMES_VERSION` when the env var is set.
 - `hermes --version` output shape: `Hermes Agent v0.20.0 (2026.8.3)` + install dir + python lines.
+- Missing-secret posture is SPLIT by trigger: on `pull_request` the paid leg is
+  a VISIBLE SKIP (warning + job summary; installer digest, payload, and version
+  pins still verified — neither a fork nor a branch PR author can fix repo
+  secrets, and a permanently-red door trains reviewers to ignore it). The
+  nightly schedule and `workflow_dispatch` stay loud-fail so the owner sees red
+  until `gh secret set ANTHROPIC_API_KEY` runs.
 
 ## Multi-provider 401 gotcha (door hermeticity)
 With `model.default` pinned to `anthropic/*` but a SECOND provider key visible (env or
