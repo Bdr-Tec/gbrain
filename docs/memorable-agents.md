@@ -26,8 +26,10 @@ integration; every byte that leaves does so inside the CLI. Per command:
 
 Server-side behavior — statelessness, trace retention, "nodes only" — is
 **Memorable's claim**, not something gbrain can verify. Redaction (vendor-key
-patterns + high-entropy scan on the tool arguments) runs before anything
-reaches the receipt, and is best-effort, not a guarantee.
+patterns + high-entropy scan on the tool arguments, and on the session corpus
+text once the relay is on — the relay child derives its egress task line from
+it) runs before anything reaches the receipt, and is best-effort, not a
+guarantee.
 
 Two side effects worth knowing before you run setup commands:
 
@@ -78,7 +80,8 @@ it, only the gbrain-side `set …false` / `unset` / this purge do).
 
 `gbrain doctor` carries a `memorable_relay_health` check that names every
 broken or half-consented state — enabled-without-disclosure, consent missing
-on the CLI side, binary missing, the last relay run's failure, receipts
+on the CLI side, binary missing, the last relay run's failure (except the one
+documented, expected OpenClaw rejection, which shows as ok-with-note), receipts
 written but never relayed, and a codex hook that is wired but has never fired
 (codex hooks fail silently when their trust entry goes stale).
 
