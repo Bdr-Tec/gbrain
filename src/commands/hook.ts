@@ -1564,7 +1564,7 @@ async function hookSessionEnd(io: HookIo): Promise<number> {
               workspace_root: ws ?? process.cwd(),
               tool_calls_json: toolCallsJson,
               secret_scan_ok: true, // scanner ran — the unscanned case took the branch above
-            }, { trimRelayFile: true }); // hook lane is the ONE trimmer of memorable-relay.jsonl
+            }, { trimRelayFile: true }); // both capture lanes trim memorable-relay.jsonl (converging newest-keeping trims)
             for (const r of relay.degradeReasons) {
               if (r.startsWith('memorable_relay_')) deferredReasons.push(r);
               else degrade(r);

@@ -12,7 +12,13 @@
  *                                        out-of-band state; names the fix)
  *   stamp ok, CLI shows no opt-in      → warn  (relay skips every spawn)
  *   stamp ok, no runnable binary       → FAIL  (enabled-but-not-installed)
- *   last relay run reported ok:false   → warn  (names the clamped cause)
+ *   last relay run reported ok:false   → warn  (names the clamped cause;
+ *                                        EXCEPT no_decisive_steps — the
+ *                                        documented openclaw rejection — which
+ *                                        becomes a DEFERRED ok-with-note that
+ *                                        surfaces only after the codex rung
+ *                                        below passes, so it never masks a
+ *                                        dead codex trust entry)
  *   receipts exist, child NEVER wrote  → warn  (spawned, never reported —
  *                                        the silent-failure shape this whole
  *                                        surface exists to catch)
