@@ -239,6 +239,7 @@ test/supervisor.test.ts	recovery hook timeout bound (structural)	1	readFileSync
 test/sync-failures.test.ts	#4543 blocked output names failing files	4	bun-file,doctor-source-helper
 test/sync-failures.test.ts	Bug 9 — doctor surfaces sync failures	2	doctor-source-helper
 test/sync-failures.test.ts	Bug 9 — sync.ts CLI flag wiring	6	bun-file,doctor-source-helper
+test/sync-include-hidden.test.ts	sync.ts delta path threads includeHidden (#4027 merge guard)	1	readFileSync
 test/sync.test.ts	buildSyncManifest	9	bun-file
 test/sync.test.ts	isSyncable	8	bun-file
 test/sync.test.ts	resolveSlugByPathOrSourcePath (CJK wave v0.32.7, codex F4)	3	bun-file
