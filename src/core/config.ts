@@ -634,6 +634,21 @@ export function effectiveEnvDatabaseUrl(dir: string = process.cwd()): string | u
   return url;
 }
 
+/**
+ * The #427 shadow predicate, single-homed: a bare DATABASE_URL exists in the
+ * process env but the cwd-.env guard excluded it (and GBRAIN_DATABASE_URL is
+ * unset) — the "init inside a web-app checkout" confusion shape. Consumers:
+ * engine-status, db-repair, the CLI's no-config marker site.
+ */
+export function envShadowDetected(dir: string = process.cwd()): boolean {
+  return (
+    typeof process.env.DATABASE_URL === 'string' &&
+    process.env.DATABASE_URL.length > 0 &&
+    !process.env.GBRAIN_DATABASE_URL &&
+    effectiveEnvDatabaseUrl(dir) === undefined
+  );
+}
+
 export function loadConfig(): GBrainConfig | null {
   let fileConfig: GBrainConfig | null = null;
   try {
