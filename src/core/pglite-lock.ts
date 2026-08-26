@@ -161,6 +161,7 @@ export function inspectLockHolder(dataDir: string | undefined): LockHolderInfo {
   const lockDir = getLockDir(dataDir);
   if (!lockDir || !existsSync(lockDir)) return { held: false };
   try {
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- lockDir derives from the OPERATOR's configured PGLite data dir (getLockDir over database_path), LOCK_FILE is a module constant; read-only inspection of the operator's own lock file, same trusted-local shape as this module's pre-existing join sites, never remote input
     const lockData = JSON.parse(readFileSync(join(lockDir, LOCK_FILE), 'utf-8'));
     const pid = typeof lockData.pid === 'number' ? lockData.pid : undefined;
     const alive = pid !== undefined && isProcessAlive(pid);

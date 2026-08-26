@@ -273,7 +273,7 @@ export async function runPreferPostgresLadder(o: PreferPostgresOpts): Promise<vo
         if (!checks.hasVector) {
           note('rung 3 (local postgres): reachable but pgvector is not installed — install it (or use another rung). Next.');
         } else if (!checks.hasDb && !o.allowCreateDb) {
-          note('rung 3 (local postgres): reachable with pgvector, but no `gbrain` database. CREATE DATABASE on a server gbrain does not own needs explicit consent: re-run with --allow-create-db. Next.');
+          note('rung 3 (local postgres): reachable with pgvector, but no `gbrain` database. CREATE DATABASE on a server not owned by this brain needs explicit consent: re-run with --allow-create-db. Next.');
         } else {
           if (!checks.hasDb) {
             await dbRepairDeps.withEngine({ engine: 'postgres', database_url: maint }, async (engine) => {
