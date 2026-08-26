@@ -174,8 +174,10 @@ to `~/.gbrain/integrations/google/heartbeat.jsonl` — no manual heartbeat neede
 2. **External consent screens MUST be published to Production.** In "Testing"
    mode Google silently revokes refresh tokens every 7 days
    (`invalid_grant_testing_expiry`). `gbrain doctor`'s `google_oauth` check
-   warns at day ~6, before the pipeline dies. Internal (Workspace) consent
-   screens don't have this problem.
+   warns once an account goes 5+ days without a successful refresh — an
+   actively-syncing account gets no pre-warning, so publish rather than
+   rely on the warning. Internal (Workspace) consent screens don't have
+   this problem.
 
 3. **Tokens live in the vault, not in env or ad-hoc files.** The native
    connector stores tokens in `~/.gbrain/credentials.json` (0600, atomic

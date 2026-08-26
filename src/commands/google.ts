@@ -802,8 +802,13 @@ Subcommands:
                --port <n>               fixed loopback port
                --via gbrain.io          hosted fast path (no GCP setup; feature-gated)
                --consent-state production|testing   record your consent screen's state
+               --timeout-ms <ms>        consent wait timeout (default 600000)
                --json
   setup        connect + register source + first sync + first 'waiting' (one command)
+               --account <email>        which account (repeat setup per account)
+               --history-days <n>       backfill window for the source (default 90)
+               --sync-budget-ms <ms>    first-sync wall-clock budget
+               (+ all connect flags above)
   status       accounts, scopes, refresh probe, linked sources  [--json] [--no-probe]
   disconnect   remove an account's tokens  <email> [--purge-client]
 

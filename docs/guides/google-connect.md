@@ -105,10 +105,13 @@ Google sources are ordinary gbrain sources: `gbrain sync --source <id>`,
 `gbrain sync --all`, autopilot, and the dream cycle all pick them up. A bare
 un-targeted `gbrain sync` (repo mode) does not — target it or use `--all`.
 Health: `gbrain google status` (live refresh probe per account) and
-`gbrain doctor` (the `google_oauth` check warns from day 5 of a Testing-mode
-consent screen, before Google kills the tokens at day 7). Once you publish
-the app to Production, record it — `gbrain google connect --consent-state
-production` — so the weekly-expiry warning stops firing. Less-common flags
+`gbrain doctor` (the `google_oauth` check warns once a Testing-mode account
+goes 5+ days without a successful refresh — note an account that refreshes
+daily gets no pre-warning before Google kills Testing-mode tokens at day 7;
+publishing to Production is the real fix). Once you publish the app to
+Production, record it by re-running consent —
+`gbrain google connect --reauth <email> --consent-state production` — so the
+weekly-expiry warning stops firing. Less-common flags
 (`--via`, `--no-browser`, `--no-probe`, `--purge-client`, and setup's
 `--history-days` / `--sync-budget-ms`): `gbrain google --help`. The `--via`
 hosted fast path (a verified OAuth client brokering consent, tokens still
@@ -116,9 +119,10 @@ stored locally) is feature-gated off until the relay server exists; its full
 design lives at
 [`docs/designs/HOSTED_OAUTH_RELAY.md`](../designs/HOSTED_OAUTH_RELAY.md).
 
-Sync freshness is honest by construction: a sweep only stamps the source as
-synced when it fully succeeds, so `gbrain waiting`'s staleness gate can trust
-it. A single thread that repeatedly fails to fetch is skipped after a few
+Sync freshness is honest by construction: the GMAIL sweep's success gates the
+source's synced stamp (it protects loop freshness — the thing `gbrain
+waiting`'s staleness gate exists to guard); contacts/calendar failures mark
+the run partial without blocking it. A single thread that repeatedly fails to fetch is skipped after a few
 consecutive failures instead of wedging the sync forever;
 `gbrain sync --source <id> --full` retries skipped threads with a fresh
 ledger.

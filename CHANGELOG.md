@@ -61,8 +61,9 @@ promised, and the context needed to respond.
   ops + troubleshooting), `docs/guides/google-connect.md`,
   `docs/guides/open-loops.md`; the email/calendar/credential recipes now name
   real commands instead of prose collectors; `gbrain doctor` gains a
-  `google_oauth` check (zero-network vault token health + a proactive
-  weekly-expiry warning; the live refresh probe is `gbrain google status`).
+  `google_oauth` check (zero-network vault token health + a warning when a
+  Testing-mode account stops refreshing ahead of the weekly expiry; the live
+  refresh probe is `gbrain google status`).
 
 ### Changed
 - Schema migration v142 adds the `open_loops` and `loop_suppressions` tables

@@ -214,4 +214,5 @@ table. The three users actually hit:
 - **`invalid_grant_testing_expiry`** (everything silently stopped ~day 7) →
   publish the consent screen to Production, then
   `gbrain google connect --reauth <email>`. `gbrain doctor`'s `google_oauth`
-  check warns at day ~6, before this bites.
+  check warns once an account goes 5+ days without a successful refresh
+  (an actively-syncing account gets no pre-warning — publish to Production).

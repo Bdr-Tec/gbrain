@@ -78,7 +78,9 @@ Multiple accounts: repeat with `--account work@example.com`.
 
 Verify health afterwards: `gbrain google status --json` (per-account
 refresh probe) — and `gbrain doctor` carries a `google_oauth` check that
-warns BEFORE the 7-day Testing-mode token expiry can bite.
+warns once a Testing-mode account goes 5+ days without a successful
+refresh. An actively-syncing account gets no pre-warning before the 7-day
+Testing-mode expiry — publishing to Production is the real fix.
 
 ## Daily operation
 

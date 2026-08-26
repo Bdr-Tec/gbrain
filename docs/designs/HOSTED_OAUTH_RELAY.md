@@ -192,7 +192,7 @@ Hosted gbrain.io runs the same `src/core/creds` + `src/core/google` code:
 | `RedirectStrategy` | `'loopback' \| 'paste' \| 'hosted-callback'` | `src/core/creds/redirect.ts` |
 | Relay client | `createSession / pollClaim / refreshViaRelay`, gated by `GBRAIN_OAUTH_RELAY_URL` | `src/core/creds/relay-client.ts` |
 | Export bundle | versioned scrypt+AES-GCM JSON, per-credential | `src/core/creds/export.ts` |
-| Error codes | `relay_unreachable`, `relay_session_expired`, `claim_already_used` + the 16-entry Google catalog | `src/core/creds/errors.ts` |
+| Error codes | `relay_unreachable`, `relay_session_expired`, `claim_already_used`, `relay_disabled` + the full Google credential catalog | `src/core/creds/errors.ts` |
 
 Server implementations must round-trip the relay client's fake-server test suite
 (`test/creds-relay-client.test.ts`) — treat it as the conformance spec.
