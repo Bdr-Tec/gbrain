@@ -2,6 +2,106 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.46.31.0] - 2026-08-26
+
+The db-availability wave: gbrain now detects which engine a brain runs on,
+prefers Postgres for agent-harness installs when one is genuinely usable, and
+— when Postgres access breaks at runtime — diagnoses and repairs it instead of
+going dark. The whole loop is engine-free by construction: every new command
+works precisely when the database doesn't.
+
+### Added
+- **`gbrain engine status [--json] [--probe]`** — answers "which engine, where
+  does its URL come from, and can we reach it?" without needing a working
+  database. Mount-aware, env-shadow-aware, PGLite-lock-aware (a live serve
+  reads as healthy-in-use, not a hang), and `--probe` failures come back as a
+  classified reason with a remediation, never a raw driver error.
+- **`gbrain db-repair [--yes] [--json]`** — engine-free Postgres-access repair
+  with tiered, flag-gated consent: safe fixes (bounded reconnects, pending
+  migrations, the vector extension, starting gbrain's own docker container)
+  apply under `--yes`; connection-string rewrites need `--yes
+  --apply-rewrites`, print before applying, are receipted, and are reversible
+  via `--undo-last-rewrite`; credential problems get exact recipes, never
+  automation. A healthy probe exits 0 "nothing to fix". Repeat repairs are a
+  symptom — `gbrain doctor` now flags them.
+- **`gbrain init --prefer-postgres [--allow-docker]`** — a five-rung
+  Postgres-first install ladder for harness installs (env URL → Supabase
+  Management-API discovery via `SUPABASE_ACCESS_TOKEN` → local Postgres →
+  gbrain's own docker container → PGLite floor). Every mutation of
+  infrastructure gbrain doesn't own sits behind an explicit flag; discovered
+  URLs are connect-probed before anything persists; the ladder refuses to run
+  over an already-configured brain; and a bare `DATABASE_URL` is adopted only
+  when the target is verifiably a gbrain brain or empty. The zero-config
+  `gbrain init` default stays PGLite.
+- **Degraded-mode serve** — when Postgres is unreachable at `gbrain serve`
+  startup, the MCP server now boots anyway: tool calls return a classified,
+  redacted `database_error` envelope with remediation, the server retries the
+  connection lazily (single-flight, storm-proof), and a repaired database
+  restores full service on the next call — no harness restart. Kill switch:
+  `GBRAIN_SERVE_DEGRADED=0`. The HTTP health endpoint reports
+  `{status: "degraded", reason}` while dead.
+- **The runtime self-heal loop** — DB-access failures now emit a machine
+  marker (`GBRAIN_DB_ACCESS <reason>`) on non-TTY stderr and inside MCP error
+  envelopes, and two new bundled skills close the loop in both plugin
+  personas: `db-repair` (triggers on the marker, diagnoses first, applies only
+  tiered fixes, relays manual recipes) and `postgres-adopt` (engine detection,
+  Postgres adoption, wrapping `gbrain migrate --to supabase`). The action a
+  skill takes is always the hardcoded command — never anything parsed from the
+  marker.
+- New doctor checks: a classified `connection` entry in every failure shape
+  (including total outages), `pglite_scale` (PGLite brains past the size
+  heuristic get the migrate recommendation for the life of the brain), and
+  `db_repair_recurrence` (3+ same-reason repairs in a week is a genesis
+  problem, flagged even with the database down).
+- `gbrain smoke-test` now reports the engine identity, checks database health
+  through the classified doctor surface, and auto-repairs access before
+  re-testing.
+
+### Changed
+- MCP tool calls that fail on database access now return
+  `error: "database_error"` with a redacted message and a remediation-bearing
+  suggestion (previously `internal_error` with a raw driver message). The
+  seven memory verbs keep their frozen v1 code set (`unavailable`, reason in
+  `detail`). If a downstream client matches on the literal `internal_error`
+  for DB failures, update it.
+- CLI error output for connection failures is classified and redacted at one
+  choke point; connection strings no longer appear verbatim in error text,
+  doctor output, or agent transcripts.
+- `gbrain config set database_url <conn>` (and `database_path`) now writes the
+  configuration plane gbrain actually reads, works while the database is
+  unreachable, warns when the write flips engines, and refuses on thin-client
+  setups. Previously the write landed in a plane the engine never read — it
+  echoed success and changed nothing.
+- `gbrain config set engine <x>` now refuses with the migrate recipe: engine
+  is inferred from the connection settings, and flipping it without a data
+  migration would split the brain across two stores.
+- Local-Postgres setup is promoted to a first-class section in
+  `docs/ENGINES.md`, and harness install docs carry the ladder + marker
+  contract.
+
+### Fixed
+- Hybrid search on a dead database now surfaces the classified error instead
+  of returning an empty result set — an outage can no longer masquerade as
+  "no results".
+- `gbrain init` against a Postgres without the vector extension now fails
+  loudly with the fix (the error was previously swallowed by a fallback
+  probe).
+- Supabase project references containing digits are now handled throughout;
+  Management-API discovery validates candidates against the live API instead
+  of constructing hostnames, and its requests carry bounded timeouts.
+- Config value echoes redact both `postgres://` and `postgresql://` connection
+  strings (the old pattern missed one spelling).
+
+### To take advantage of v0.46.31.0
+```bash
+gbrain upgrade         # no schema migration — new commands + skills
+gbrain engine status --probe   # see your engine + reachability, engine-free
+gbrain doctor          # picks up the new checks
+```
+If gbrain ever reports `GBRAIN_DB_ACCESS`, run `gbrain db-repair` — diagnose
+first, `--yes` to apply safe fixes. New harness installs can opt into
+Postgres-first with `gbrain init --prefer-postgres`.
+
 ## [0.46.30.0] - 2026-08-25
 
 Privacy hardening pass: the read-side privacy boundary is now guarded by a
