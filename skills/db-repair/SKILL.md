@@ -62,7 +62,9 @@ failed — db-repair will refuse with that mount's diagnosis; relay it.
 gbrain db-repair --json          # 1. diagnose (mutates nothing)
 ```
 
-Read `reason`, `tier`, and `plan` from the JSON. Then:
+Read `reason`, `tier`, and `plan` from the JSON. `reason: "healthy"` (exit 0)
+means nothing to fix — it carries no `tier` key; report healthy and stop.
+Otherwise:
 
 1. **auto-tier fixes available** → show the operator the one-line plan, then:
 
@@ -77,8 +79,10 @@ gbrain db-repair --yes           # 2. apply the auto tier, re-probes after each 
 gbrain db-repair --yes --apply-rewrites
 ```
 
-3. **manual-tier reason** (`auth_failed`, `db_missing`, `env_shadowed`,
-   paused project, `unknown`) → relay the printed recipe verbatim and stop.
+3. **manual-tier reason** (`auth_failed`, `permission_denied`,
+   `tenant_not_found` — incl. paused Supabase projects — `db_missing`,
+   `no_url`, `env_shadowed`, `unknown`) → relay the printed recipe verbatim
+   and stop.
 
 4. **Verify** (always, after any applied fix):
 

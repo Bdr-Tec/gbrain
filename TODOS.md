@@ -2,15 +2,14 @@
 
 ## Daemon env-file lane follow-ups (#2608 / #4443 takeover, filed 2026-08-21)
 
-- [ ] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**
-  **What:** `INSTALL_FOR_AGENTS.md` and `docs/INSTALL.md` say `gbrain config set`
-  "writes the DB plane, which the provider pipeline never reads" — but
-  `src/commands/config.ts` (FILE_PLANE_API_KEYS, ~line 259) routes API keys to
-  the file plane (routed, not refused), which `mergedProviderEnv` folds.
-  **Why:** the docs teach a prohibition whose stated rationale is no longer
-  true; either document the routing or remove the scare. **Where to start:**
-  `src/commands/config.ts` FILE_PLANE_API_KEYS; both install docs; regen
-  `bun run build:llms`. **Effort:** S.
+- [x] **P3 — Fix the stale `config set` DB-plane claim in the install docs.**
+  **Completed:** v0.46.31.0 (2026-08-26). The db-availability wave's config-plane
+  work rewrote the `INSTALL_FOR_AGENTS.md` and `docs/INSTALL.md` copy to document
+  the file-plane routing, and the post-push docs sweep fixed the last remaining
+  copy of the stale claim in `docs/guides/embedding-migration.md`
+  (`gbrain config set voyage_api_key` is file-plane routed via
+  `FILE_PLANE_API_KEYS`, which `mergedProviderEnv` reads). `bun run build:llms`
+  regenerated in the same commits.
 
 - [ ] **P3 — Refresh file-plane keys in the autopilot tick.** **What:** call
   `refreshGatewayEnvFromFilePlane()` (`src/core/ai/gateway.ts:~497`, today only

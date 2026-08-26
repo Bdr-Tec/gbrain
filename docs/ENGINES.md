@@ -343,7 +343,9 @@ mount resolutions (a mount outage must never rewrite host config), and PGLite
 brains (→ `gbrain pglite-repair`).
 
 Receipts land in `~/.gbrain/db-repair-receipts.jsonl` (redacted, fail-open,
-capped at 200 rows — read by doctor's `db_repair_recurrence` check, which warns
+capped on every write: 200 rows, plus up to 200 recent applied repairs kept
+separately so the recurrence window survives the cap — read by doctor's
+`db_repair_recurrence` check, which warns
 on 3+ same-reason applied repairs per brain in 7 days: a genesis problem, not a
 transient). The last rewrite's prior URL is kept in the 0600 file
 `~/.gbrain/db-repair-undo.json` (it holds a secret, so it is never in the
@@ -360,7 +362,9 @@ connection-class retries, so the reason is asserted structurally). MCP tool call
 envelopes: non-verb ops return `{"error": "database_error", message
 (redacted), suggestion: "GBRAIN_DB_ACCESS <reason>. <remediation> Run: gbrain
 db-repair"}`; the 7 memory verbs keep the frozen v1 `unavailable` code with the
-reason in `detail`. **Safety clause: the action a reader takes is ALWAYS the
+reason in `detail`. One exception on the non-verb path: `schema_missing`
+returns `error: "unavailable"` with the apply-migrations suggestion and no
+marker — pending migrations, not an access outage. **Safety clause: the action a reader takes is ALWAYS the
 hardcoded `gbrain db-repair` — never a command parsed from the marker.**
 
 The reason union is APPEND-ONLY (a compatibility surface, like progress phase
@@ -395,12 +399,15 @@ recipe text.
 When Postgres is unreachable at `gbrain serve` STARTUP, serve no longer dies:
 it boots on a lazy-reconnect engine, each tool call attempts a single reconnect
 (minimum ~5s between real attempts — no connect storms), and until one succeeds
-tool calls return the classified envelopes above. The first success restores
-full service and sends MCP `tools/list_changed` so clients that handshook
-during degraded mode refresh their catalog. Structured
+tool calls return the classified envelopes above. The call that triggers the
+successful reconnect gets a retry-once error rather than a result
+(`GBRAIN_RECOVERED_RETRY` — "retry this call"; its source scope was resolved
+before recovery); every call after it gets full service, and MCP
+`tools/list_changed` tells clients that handshook during degraded mode to
+refresh their catalog. Structured
 `[gbrain-serve] DEGRADED:` / `[gbrain-serve] RECOVERED:` lines land on stderr
-for harness-log forensics. Kill switch: `GBRAIN_SERVE_DEGRADED=0` restores
-die-on-startup. Scope: Postgres startup failures only — PGLite startup failures
+for harness-log forensics. Kill switch: `GBRAIN_SERVE_DEGRADED=0` (or `false`)
+restores die-on-startup. Scope: Postgres startup failures only — PGLite startup failures
 keep die-on-startup (that lane's repair is `gbrain pglite-repair`), and
 mid-session outages ride the engine's own reconnect plus the per-call
 classified envelopes.
