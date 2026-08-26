@@ -1,11 +1,17 @@
 /**
  * Dispatch-layer backup nag (src/mcp/dispatch.ts):
  *   - maybeAttachBackupNotice — the once-per-process AGGREGATE extra content
- *     block on remote tool calls (content[0] untouched; counts only, never a
- *     local path / source id);
+ *     block on STDIO tool calls (content[0] untouched; counts only, never a
+ *     local path / source id). The notice is stdio-ONLY: 'http', an UNSET
+ *     transport marker, and local callers (remote: false) get NO block;
+ *   - the hourly recheck latch (backupNoticeCheckedMs): once a consult ran,
+ *     later cache changes within the hour are invisible until
+ *     __resetBackupNoticeForTests;
  *   - the stdio-gated maybeRefreshBackupStatusInProcess call — the TRUST PIN:
  *     'http' or an UNSET transport marker never computes (fail-closed),
- *     'stdio' kicks the in-process refresher;
+ *     'stdio' kicks the in-process refresher. The refresher arms its 1h
+ *     attempt floor even on the fresh-cache no-op path — a second call that
+ *     must compute needs __resetBackupRefreshForTests first;
  *   - nag-gate integration: showing the block records an 'mcp' entry and
  *     spends one unit of the global monthly budget.
  *
@@ -52,6 +58,10 @@ const engineStub = {
   getConfig: async () => null,
   executeRaw: async (sql: string) => {
     rawCalls.push(String(sql));
+    // countLivePages treats an EMPTY rowset as UNESTABLISHED (null → degraded
+    // verdict, never persisted) — a healthy stub must answer the pages count
+    // with a real number or the refresher pins below would never see a cache.
+    if (/\bfrom\s+pages\b/i.test(String(sql))) return [{ n: 0 }];
     return [];
   },
 } as unknown as BrainEngine;
@@ -92,10 +102,12 @@ function okStatus(): BackupStatus {
 
 type CallOpts = { remote?: boolean; transport?: 'stdio' | 'http' };
 
+// Default transport is 'stdio' — the ONLY transport the notice fires on.
+// Trust-pin tests pass 'http' / undefined explicitly.
 function callSearch(opts: CallOpts = {}) {
   return dispatchToolCall(engineStub, 'search', { query: 'anything at all' }, {
     remote: true,
-    transport: 'http',
+    transport: 'stdio',
     sourceId: 'default',
     ...opts,
   });
@@ -145,11 +157,11 @@ afterEach(() => {
 
 // ── the pins ────────────────────────────────────────────────────────────────
 
-describe('maybeAttachBackupNotice (remote aggregate block)', () => {
-  test('warn cache + remote http → extra block once per process; content[0] untouched', async () => {
+describe('maybeAttachBackupNotice (stdio aggregate block)', () => {
+  test("warn cache + transport 'stdio' → extra block once per process; content[0] untouched", async () => {
     saveBackupStatus(warnStatus());
 
-    const first = await callSearch({ remote: true, transport: 'http' });
+    const first = await callSearch({ remote: true, transport: 'stdio' });
     expect(first.isError).toBeUndefined();
     // content[0] is UNCHANGED — still the bare op result.
     expect(JSON.parse(first.content[0].text)).toEqual(nextResults);
@@ -161,9 +173,30 @@ describe('maybeAttachBackupNotice (remote aggregate block)', () => {
     expect(block).toContain('no git remote');
 
     // Once per process: the second call carries NO backup block.
-    const second = await callSearch({ remote: true, transport: 'http' });
+    const second = await callSearch({ remote: true, transport: 'stdio' });
     expect(second.content.length).toBe(1);
     expect(JSON.parse(second.content[0].text)).toEqual(nextResults);
+  });
+
+  test("transport 'http' + warn cache → NO block (stdio-only notice); a later stdio call still gets it", async () => {
+    saveBackupStatus(warnStatus());
+
+    const http = await callSearch({ remote: true, transport: 'http' });
+    expect(http.content.length).toBe(1);
+    expect(JSON.parse(http.content[0].text)).toEqual(nextResults);
+
+    // The http call must not burn the once-per-process flag or arm the
+    // hourly latch — the first stdio call still attaches the block.
+    const stdio = await callSearch({ remote: true, transport: 'stdio' });
+    expect(stdio.content.length).toBe(2);
+    expect(stdio.content[1].text).toContain('2 of 3');
+  });
+
+  test('transport UNSET + warn cache → NO block (fail-closed)', async () => {
+    saveBackupStatus(warnStatus());
+    const out = await callSearch({ remote: true, transport: undefined });
+    expect(out.content.length).toBe(1);
+    expect(JSON.parse(out.content[0].text)).toEqual(nextResults);
   });
 
   test('aggregate block never leaks local paths or source ids', async () => {
@@ -186,6 +219,9 @@ describe('maybeAttachBackupNotice (remote aggregate block)', () => {
   test('absent cache → no backup block', async () => {
     const out = await callSearch();
     expect(out.content.length).toBe(1);
+    // Default transport is stdio, so the fire-and-forget refresher computes
+    // in the background — let it settle before afterEach tears tmp down.
+    await waitFor(() => existsSync(backupStatusPath()), 2000);
   });
 
   test('GBRAIN_BACKUP_CHECK=0 kill switch silences a warn cache', async () => {
@@ -195,11 +231,30 @@ describe('maybeAttachBackupNotice (remote aggregate block)', () => {
     expect(out.content.length).toBe(1);
   });
 
-  test('opts.remote:false (local gbrain call) → no backup block even with warn cache', async () => {
+  test('opts.remote:false (local gbrain call) → no backup block even with warn cache on stdio', async () => {
     saveBackupStatus(warnStatus());
-    const out = await callSearch({ remote: false });
+    const out = await callSearch({ remote: false, transport: 'stdio' });
     expect(out.content.length).toBe(1);
     expect(JSON.parse(out.content[0].text)).toEqual(nextResults);
+  });
+
+  test('hourly latch: an ok-cache consult blinds a warn cache written moments later, until reset', async () => {
+    // First consult sees an ok cache: no block, but backupNoticeCheckedMs arms.
+    saveBackupStatus(okStatus());
+    const first = await callSearch();
+    expect(first.content.length).toBe(1);
+
+    // The cache flips to warn a moment later IN THE SAME PROCESS — the
+    // hourly recheck latch means dispatch does not re-read the file yet.
+    saveBackupStatus(warnStatus());
+    const latched = await callSearch();
+    expect(latched.content.length).toBe(1);
+
+    // __resetBackupNoticeForTests clears the latch → the block attaches.
+    __resetBackupNoticeForTests();
+    const after = await callSearch();
+    expect(after.content.length).toBe(2);
+    expect(after.content[1].text).toContain('2 of 3');
   });
 
   test('nag-gate integration: one shown block records an mcp entry + global_shown_count 1', async () => {
@@ -251,6 +306,30 @@ describe('stdio-gated refresher (TRUST PIN)', () => {
     expect(s!.overall).toBe('ok'); // zero sources, zero pages → nothing at risk
     expect(s!.totals.assets).toBe(0);
     // The refresher DID walk the sources table on the stdio path.
+    expect(rawCalls.some((sql) => /\bfrom\s+sources\b/i.test(sql))).toBe(true);
+  });
+
+  test('attempt floor arms on the fresh-cache no-op path: a deleted cache is NOT recomputed within the hour', async () => {
+    // First stdio call consults a fresh ok cache → refresher no-ops but arms
+    // its 1h attempt floor.
+    saveBackupStatus(okStatus());
+    await callSearch({ remote: true, transport: 'stdio' });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+
+    // Delete the cache. A second stdio call within the hour is still a no-op
+    // — the floor, not the cache, gates the attempt.
+    rmSync(backupStatusPath(), { force: true });
+    await callSearch({ remote: true, transport: 'stdio' });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(existsSync(backupStatusPath())).toBe(false);
+    expect(rawCalls.filter((sql) => /\bfrom\s+sources\b/i.test(sql))).toEqual([]);
+
+    // __resetBackupRefreshForTests clears the floor → the compute runs.
+    __resetBackupRefreshForTests();
+    await callSearch({ remote: true, transport: 'stdio' });
+    const appeared = await waitFor(() => existsSync(backupStatusPath()), 2000);
+    expect(appeared).toBe(true);
     expect(rawCalls.some((sql) => /\bfrom\s+sources\b/i.test(sql))).toBe(true);
   });
 });
