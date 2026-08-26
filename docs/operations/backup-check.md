@@ -21,10 +21,16 @@ push-failure banner).
 
 **Not covered (v1, by design):** the DB file itself (`~/.gbrain` is
 deliberately gitignored — the repo is the system of record and the DB rebuilds
-via `gbrain sync`); mounted brains; pure-HTTP thin-client installs (no local
-CLI on the brain host — nothing there can probe git); network reachability of
-the remote (`--probe` is a filed follow-up; "has origin" doesn't prove "can
-push").
+via `gbrain sync`); mounted brains (the verdict cache is host-brain-scoped —
+computes against a mounted brain are never persisted); pure-HTTP thin-client
+installs (no local CLI on the brain host — nothing there can probe git);
+network reachability of the remote (`--probe` is a filed follow-up; "has
+origin" doesn't prove "can push"); DB pages that belong to no source on an
+install that HAS a workspace repo (whether the workspace write-through covers
+them is not verified — the `undeclared_db_only_pages` doctor check is the
+page-level audit). The OpenClaw context line is bounded per process (once per
+24h); an install that restarts its serve constantly and never fires any
+recording channel can see it more often than the recorded-notice cap.
 
 ## Where the warning reaches you
 
@@ -34,9 +40,12 @@ channels — all bounded by the shared nag budget:
 1. **Claude Code banner** (`gbrain hook user-prompt` → `systemMessage`, shown
    directly to you; a pending push-failure banner outranks it).
 2. **Claude Code session-start digest** (model-visible note).
-3. **MCP tool responses** (one aggregate extra content block per serve
+3. **MCP tool responses** (one aggregate extra content block per stdio serve
    process — counts only, never paths; reaches Codex, OpenClaw, and
-   plugin-only installs).
+   plugin-only installs, which all register stdio serves). HTTP serves attach
+   no notice: a remote thin client's token scope doesn't grant the host's
+   backup posture, and a remote-triggered display must not spend the local
+   notice budget.
 4. **CLI stderr** on most `gbrain <cmd>` invocations (serve/hook/jobs/call and
    the check's own surfaces are excluded; `--quiet` and
    `GBRAIN_SKIP_STARTUP_HOOKS` silence it). The machine marker
