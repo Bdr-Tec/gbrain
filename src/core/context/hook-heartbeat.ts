@@ -197,9 +197,9 @@ export interface SessionReceiptEntry {
   ts: string;
   session_id: string;
   /**
-   * Producers today: 'claude-code' (session-end hook) and 'openclaw'
-   * (context-engine compaction lane). 'codex'/'opencode' are declared ahead
-   * of their capture lanes. NOTE: this union is NOT HookIo.harness — widening
+   * Producers today: 'claude-code' + 'codex' (session-end hook lanes) and
+   * 'openclaw' (context-engine compaction lane). 'opencode' is declared ahead
+   * of its capture lane. NOTE: this union is NOT HookIo.harness — widening
    * THAT union also requires widening HARNESS_CHANNELS in volunteer-events.ts
    * (hook.ts's user-prompt path silently maps unknown channels to
    * 'claude-code', a misattribution, not a compile error).
@@ -515,7 +515,7 @@ export async function readSessionReceiptsTail(n: number): Promise<SessionReceipt
 /** The capture lanes the CURRENT build can relay. Widening this list is a
  * deliberate consent event: old stamps stop validating until the user re-runs
  * the disclosure. */
-export const MEMORABLE_CAPTURE_HARNESSES: readonly string[] = ['claude-code', 'openclaw'];
+export const MEMORABLE_CAPTURE_HARNESSES: readonly string[] = ['claude-code', 'openclaw', 'codex'];
 
 /** Canonical enable-time disclosure — the one text the user consents to.
  * Rendered by `gbrain config set integrations.memorable.enabled true` and

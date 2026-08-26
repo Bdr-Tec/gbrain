@@ -1510,7 +1510,7 @@ async function runHooks(
         if (r.ok) {
           hooksWritten = true;
           console.log(
-            `codex SessionEnd hook installed in ${r.hooksPath} (+ trust entry in ${r.configPath}) — session capture is live for the WHOLE machine's codex sessions. Turn off any time with GBRAIN_HOOKS=0, or remove with \`gbrain bootstrap remove\`.`,
+            `codex SessionEnd hook installed in ${r.hooksPath} (+ trust entry in ${r.configPath}) — session capture is live for the WHOLE machine's codex sessions. Turn off any time with GBRAIN_HOOKS=0, or remove with \`gbrain bootstrap uninstall\`.`,
           );
           console.log('note: per-turn context on codex stays the AGENTS.md pull protocol — this hook is session-END capture only (v1).');
           for (const note of r.notes) console.error(note);

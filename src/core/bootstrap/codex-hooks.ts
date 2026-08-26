@@ -68,7 +68,7 @@ export const CODEX_HOOKS_SPEC_TARGET: HostSpecTarget = {
 export const CODEX_HOOK_OWNERSHIP_TOKEN = 'hook session-end --harness codex';
 
 const GBRAIN_DESCRIPTION =
-  'gbrain session-end capture — the SessionEnd entry whose command mentions "gbrain" is managed by `gbrain bootstrap` (re-runs rewrite it; `gbrain bootstrap remove` deletes it)';
+  'gbrain session-end capture — the SessionEnd entry whose command mentions "gbrain" is managed by `gbrain bootstrap` (re-runs rewrite it; `gbrain bootstrap uninstall` deletes it)';
 
 const TRUST_BLOCK_BEGIN = '# --- gbrain:codex-hooks-trust (managed block — do not edit; gbrain bootstrap rewrites it) ---';
 const TRUST_BLOCK_END = '# --- /gbrain:codex-hooks-trust ---';

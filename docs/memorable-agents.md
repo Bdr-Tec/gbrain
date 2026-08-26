@@ -66,7 +66,10 @@ process** — restart it to apply; the config gate applies live per compaction.
 Local artifacts (all 0600 under `~/.gbrain/integrations/hooks/`, size-capped):
 `session-receipts.jsonl` (the redacted receipts) and `memorable-relay.jsonl`
 (the child's own outcome reports). Full local purge after disabling:
-`rm -f ~/.gbrain/integrations/hooks/session-receipts.jsonl ~/.gbrain/integrations/hooks/memorable-relay.jsonl`.
+`rm -f ~/.gbrain/integrations/hooks/session-receipts.jsonl ~/.gbrain/integrations/hooks/memorable-relay.jsonl ~/.gbrain/integrations/hooks/memorable-consent.json`
+(the last one is the consent stamp — removing it forces the disclosure to run
+again before any future relay; note `memorable disable` alone does NOT clear
+it, only the gbrain-side `set …false` / `unset` / this purge do).
 
 `gbrain doctor` carries a `memorable_relay_health` check that names every
 broken or half-consented state — enabled-without-disclosure, consent missing

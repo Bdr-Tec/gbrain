@@ -198,7 +198,12 @@ mode wires them in one command, with no `agent.json` and no interview:
   also enabled, two `gbrain` servers exist in different layers — the wire
   proceeds with a loud WARNING and `gbrain doctor` reports the collision
   (`plugin_lane_collision`); keep one (`codex plugin remove gbrain@gbrain`, or
-  `--remove` here).
+  `--remove` here). Unless `--no-hooks`, the harness lane also installs the
+  codex SessionEnd capture hook — the user-global `hooks.json` entry plus its
+  `config.toml` trust entry beside the target config (codex hooks are silently
+  inert without the trust pair; the write backs the config up to
+  `<config.toml>.hooks.bak`), machine-global by nature; `--remove` tears it
+  down along with the MCP block.
 - opencode: one managed `mcp.gbrain` remote entry with the bearer header
   INLINE in the user-global JSONC config (0600), written by the same
   comment-preserving editor the workspace lane uses — the `{env:…}`
