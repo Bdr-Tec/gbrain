@@ -769,6 +769,18 @@ export async function buildChecks(
   // enabled-but-never-actually-relaying.
   checks.push(await buildMemorableRelayCheck());
 
+  // 2f. Chat-connector health (D3.2): re-auth-needed / stalled-sync / drift.
+  // Credential-gated + auto_sync-gated — emits a plain "ok" (no nag) on brains
+  // with no connectors or a manual-only user.
+  if (engine) {
+    try {
+      const { connectorsHealthCheck } = await import('./doctor/checks/connectors.ts');
+      checks.push(await connectorsHealthCheck(engine));
+    } catch {
+      // best-effort; a connectors check failure must never break doctor
+    }
+  }
+
   // 3. Half-migrated Minions detection (filesystem-only).
   // If completed.jsonl has any status:"partial" entry with no later
   // status:"complete" for the same version, the install is mid-migration.
