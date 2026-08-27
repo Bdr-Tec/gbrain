@@ -196,6 +196,17 @@ const CLI_ONLY_SELF_HELP = new Set([
   // ZE interim cleanup: the retired ze-switch shim ships truthful help
   // (sunset refusal + canonical migration command); the generic stub hid it.
   'ze-switch',
+  // `gbrain takes --help` printed the generic one-line stub, so the nine
+  // subcommands (add/update/supersede/resolve/scorecard/calibration/revisit/
+  // extract/search) were undiscoverable from the CLI — the detailed usage
+  // block in runTakes (src/commands/takes.ts) was unreachable. Same holdout
+  // pattern as `capture`, `sync`, and `schema` above.
+  'takes',
+  // #4003: auth ships its own detailed usage (token/OAuth-client commands +
+  // flags) in its `default:` switch case, hit whenever the subcommand isn't
+  // one of create/list/revoke/etc — including --help. Without this entry the
+  // generic short-circuit fires first and that usage block is dead code.
+  'auth',
   // #3686 (the #578 residue): eval / storage / reindex each ship real usage —
   // eval's printHelp (15 subcommands), storage's status usage, reindex's
   // target-flag usage — that the generic one-line stub was hiding. Their
@@ -2582,6 +2593,16 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // Same pattern for `takes --help`. 'takes' is now in CLI_ONLY_SELF_HELP so
+  // the generic stub stays out of the way; this pre-engine-bind branch exposes
+  // the subcommand usage block without a configured brain. runTakes' help path
+  // returns before touching the engine.
+  if (command === 'takes' && (args.includes('--help') || args.includes('-h'))) {
+    const { runTakes } = await import('./commands/takes.ts');
+    await runTakes(null as never, args);
+    return;
+  }
+
   // #3686 (the #578 residue): `eval --help` reaches eval.ts's printHelp
   // engine-free. Placed AFTER the sub-owned no-DB routes above (brainbench /
   // longmemeval / run-all / cross-modal / chronicle / conversation-parser /
@@ -3704,6 +3725,9 @@ ADMIN
     --public-url URL                 Public issuer URL (required behind proxy/tunnel)
   connect <mcp-url> --token <t>      Wire Claude Code to a remote gbrain (bearer token)
         [--install] [--json]         Print the paste-ready command, or --install to run it
+  auth <create|list|revoke|...>      Manage legacy tokens + OAuth 2.1 clients
+  auth --help                        Full subcommand list (register-client,
+                                     rescope-client, revoke-client, permissions, test, ...)
   watch [--json]                     Push-based context: pipe conversation turns in,
                                      volunteered brain pages stream out (#2095)
   call <tool> '<json>'               Raw tool invocation
