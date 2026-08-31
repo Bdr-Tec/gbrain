@@ -28,7 +28,7 @@ import { zeroTotalContradictionsCheck } from '../core/eval-contradictions/run-he
 // original name so existing importers (tests, scripts/live-brain-first-check.ts,
 // the run_doctor op's dynamic import of doctorReportRemote) keep working
 // unchanged.
-import { multiSourceDriftAdvice } from './doctor/schema-pack-checks.ts';
+import { multiSourceDriftAdvice, multiSourceDriftGitRootSkipNote } from './doctor/schema-pack-checks.ts';
 import { bootstrapDoctorChecks } from './doctor/bootstrap-checks.ts';
 import {
   skillConformanceCheck,
@@ -39,6 +39,7 @@ import {
 } from './doctor/skill-checks.ts';
 export {
   multiSourceDriftAdvice,
+  multiSourceDriftGitRootSkipNote,
   bootstrapDoctorChecks,
   skillConformanceCheck,
   skillsManifestIntegrityCheck,
@@ -1700,16 +1701,32 @@ export async function buildChecks(
         });
       } else if (result.count > 0) {
         const sampleStr = result.sample.map(s => `${s.slug} (intended=${s.intended_source})`).join(', ');
+        const skipNote = result.git_root_skipped.length > 0
+          ? multiSourceDriftGitRootSkipNote(result.git_root_skipped)
+          : '';
         checks.push({
           name: 'multi_source_drift',
           status: 'warn',
-          message: multiSourceDriftAdvice(result.count, sampleStr),
+          message: multiSourceDriftAdvice(result.count, sampleStr) + skipNote,
         });
       } else {
+        // #4712: if EVERY candidate source was skipped as git-root-pinned,
+        // no walk actually ran — 'ok' would misreport "verified clean" when
+        // nothing was checked at all. 'warn' only in that all-skipped case;
+        // a partial skip alongside real, clean coverage stays 'ok'.
+        const allSkipped =
+          result.git_root_skipped.length > 0 &&
+          result.git_root_skipped.length >= nonDefaultWithPath.length;
         checks.push({
           name: 'multi_source_drift',
-          status: 'ok',
-          message: 'No cross-source slug drift detected.',
+          status: allSkipped ? 'warn' : 'ok',
+          message: allSkipped
+            ? `Multi-source drift check performed no verification` +
+              multiSourceDriftGitRootSkipNote(result.git_root_skipped)
+            : result.git_root_skipped.length > 0
+              ? `No cross-source slug drift detected among checked sources.` +
+                multiSourceDriftGitRootSkipNote(result.git_root_skipped)
+              : 'No cross-source slug drift detected.',
         });
       }
     }
