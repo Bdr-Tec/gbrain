@@ -30,6 +30,8 @@ import { zeroTotalContradictionsCheck } from '../core/eval-contradictions/run-he
 // unchanged.
 import { multiSourceDriftAdvice, multiSourceDriftGitRootSkipNote } from './doctor/schema-pack-checks.ts';
 import { bootstrapDoctorChecks } from './doctor/bootstrap-checks.ts';
+import { buildMemorableRelayCheck } from './doctor/checks/integrations-memorable.ts';
+export { buildMemorableRelayCheck } from './doctor/checks/integrations-memorable.ts';
 import {
   skillConformanceCheck,
   skillsManifestIntegrityCheck,
@@ -833,7 +835,13 @@ export async function buildChecks(
   // brains keep a clean doctor.
   checks.push(...(await bootstrapDoctorChecks(engine)));
 
-  // 2e. Chat-connector health (D3.2): re-auth-needed / stalled-sync / drift.
+  // 2e. Memorable relay health — engine-free, file-plane only, so it runs
+  // unconditionally (survives --fast and every --scope). Gate off = one quiet
+  // ok row; the states it exists to catch are enabled-without-disclosure and
+  // enabled-but-never-actually-relaying.
+  checks.push(await buildMemorableRelayCheck());
+
+  // 2f. Chat-connector health (D3.2): re-auth-needed / stalled-sync / drift.
   // Credential-gated + auto_sync-gated — emits a plain "ok" (no nag) on brains
   // with no connectors or a manual-only user.
   if (engine) {

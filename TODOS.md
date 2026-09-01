@@ -1,5 +1,75 @@
 # TODOS
 
+## Eval write-path fix wave follow-ups (filed 2026-08-31; the five CEO-review-deferred items — wave receipt: gbrain-evals Cat 35 bracketing runs, pre-wave baseline dream 70.2% / quote fidelity 54.2% / emission 16/20 at aa820c7f)
+
+- [ ] **P3 — E2: chunk-boundary overlap window in splitTranscriptByBudget.**
+  **What:** carry ~5% tail overlap between adjacent transcript chunks so salient
+  units straddling a boundary aren't structurally invisible to either child.
+  **Why:** each chunk's prompt says "do not assume continuity"; a unit split
+  across the cut is lost to both. **Blocked on:** post-wave Cat 35 receipts
+  showing transcripts actually chunk (`details.synthesis.jobs` >
+  `transcripts_processed`) — don't pay the determinism-test churn
+  (test/e2e/dream-synthesize-chunking byte-stability) before the receipts say
+  it matters. **Where:** src/core/cycle/synthesize.ts splitTranscriptByBudget.
+- [ ] **P3 — E3: borderline-band second-pass triage call (#4152 escalation).**
+  **What:** when the scalar score lands in [rescue_floor, threshold) and the
+  verified-segment rescue does NOT fire, spend one extra focused judge call
+  scoring the PEAK passage alone; max(scores) gates. **Why:** the rescue only
+  fires when the first judge surfaced verifiable segments; telemetry
+  (`triage.rescue_checked` high with `rescue_fired` low across cycles) would
+  mean buried signal is still slipping. **Blocked on:** exactly that telemetry
+  — the wave's live calibration showed rubric v2 alone lifts the class, so
+  don't add spend until production distributions disagree. **Where:**
+  runTriagePass processOne + triage-rescue.ts.
+- [ ] **P2 — E4: wire-or-delete the three undispatchable eval scaffolds.**
+  **What:** src/commands/eval-markdown-greenfield.ts, eval-extract-atoms.ts,
+  eval-schema-authoring.ts are registered nowhere in eval.ts/cli.ts dispatch;
+  the first two return ok:true with status not_yet_implemented — the exact
+  dishonest-envelope class #4198 fixed for synthesize-concepts. **Why:** an
+  eval surface that reports ok for work it never ran corrodes trust in every
+  other receipt. **How:** either add dispatch + honest not_implemented
+  envelopes (ok:false, nonzero exit) or delete the files + their scaffold test.
+- [ ] **P2 — E5: adaptive-return config plane + KNOBS_HASH fold (its own wave).**
+  **What:** (a) the four search.adaptive_return* keys are a DB-config no-op
+  (not in KNOWN_CONFIG_KEYS; config-db-merge folds only cycle.*; GBrainConfig
+  has no search block) — register + fold or move onto the ModeBundle ladder
+  like autocut; (b) fold gate params into knobsHash (append-only,
+  KNOBS_HASH_VERSION bump) so adaptive-on calls cache (today gate-on ==
+  cache-cold, hybrid.ts skipCache); (c) widen AdaptiveQueryIntent with
+  'concept' (drop the hybrid.ts:2141 coercion). **Why:** prerequisite for the
+  cross-surface ablation + any default flip (TODOS v0.41.33.0 section).
+- [ ] **P3 — E8: quote-verify coverage is partial on the agentic fallback path.**
+  **What:** the verify pass scopes to pages whose slug carries the transcript's
+  hash6 (`ref.slug.includes('-' + hash6)`), but that suffix is enforced
+  fail-closed only in ONESHOT mode (subagent-oneshot.ts `oneshot_slug_suffix`
+  check). An agentic-fallback child that drops the suffix creates a page the
+  verify pass skips and mislabels `skipped_preexisting` — coverage is silently
+  thinnest on the path most likely to produce sloppy output. **How:** enforce
+  the suffix server-side in the subagent put_page tool for agentic children
+  too, or at minimum split a `skipped_unbound_new_page` counter with a stderr
+  warn so the gap is observable. **From:** eval fix wave red-team review.
+- [ ] **P3 — E9: no retrofit path for unverified dream pages.**
+  **What:** quote verify only covers the CURRENT run's writtenRefs. A crash or
+  abort between child completion and the verify pass strands pages with
+  unrepaired quotes forever — and the TRIAGE_VERSION 2 bump widens the window
+  (a transcript whose children completed under v1 may re-judge below the gate
+  under v2 and never re-enter the fan-out). **How:** an operator command
+  (`gbrain dream verify --recheck`) over `frontmatter->>'dream_generated'`
+  pages matched to transcripts by raw_source/hash6, or a per-page verified
+  marker in the provenance stamp so a later cycle can find and repair them
+  regardless of the gate's current verdict. **From:** eval fix wave red-team
+  review.
+- [ ] **P3 — E7: LLM grounding judge on dream pages (TRUSTMEM-style).**
+  **What:** an opt-in verify pass that judges every dream-page claim against
+  its source transcript (coverage/preservation/faithfulness), beyond the
+  mechanical quote/numeric checks the wave shipped. **Why:** the wave's
+  synthesize-verify.ts repairs QUOTES mechanically at $0; ungrounded
+  non-quote claims (hallucination ~14%) need semantics. Field context:
+  2026 write-path research (TRUSTMEM, arXiv 2606.25161) validates
+  verify-at-write. **Costs:** per-page LLM spend on every nightly cycle —
+  needs spend.posture gates + a config default OFF. **Where:** extend the
+  synthesize-verify pass; reuse normalizeForGrounding + the receipt fields.
+
 ## Fix-wave follow-ups (filed 2026-08-29, follow-up from the v0.47.x fix wave)
 
 - [ ] **P1 — #4599 root-cause instrumentation loop.** **What:** the embed
@@ -2730,13 +2800,16 @@ Filed from the #1981 ship (v0.42.39.0). Deliberately scoped OUT — the v1 extra
 is deterministic + precision-biased. See plan + GSTACK REVIEW REPORT at
 `~/.claude/plans/system-instruction-you-are-working-wild-yeti.md`.
 
-- [ ] **P3 — broaden entity detection beyond proper-case ASCII.** The extractor
-  (`src/core/context/entity-salience.ts`) misses lowercase names and many non-Latin
-  scripts; these need an LLM pass or script-aware heuristics. **Why:** higher recall
-  on the read side. **Where:** `entity-salience.ts`. *(Partially done by the #2095
-  wave: `extractCandidatesFromWindow` now covers assistant-introduced entities and
-  pronoun follow-ups whose antecedent was NAMED in the rolling window; true pronoun
-  coreference for never-named antecedents remains with the LLM-pass idea.)*
+- [ ] **P3 — broaden entity detection beyond the current passes.** MOSTLY DONE by
+  later waves — the remaining gaps are narrower than this entry's original claim
+  (updated by the eval fix wave, 2026-08-31): lowercase Latin names now emit as WEAK
+  candidates resolved via the alias arm (v0.46.15, kta 0.150→0.0000 in
+  `evals/brainbench/baselines/main.json`), CJK names via weak n-grams (#3746).
+  STILL OPEN: lowercase SURNAME-only mentions ("did galewright follow up" — weak
+  candidates never reach the surname arm, retrieval-reflex.ts:195-230), caseless
+  non-CJK scripts (Arabic/Hebrew/Devanagari/Thai — \p{Lo} invisible to both passes),
+  pure-hiragana grams, and true pronoun coreference (LLM-pass idea). **Where:**
+  `entity-salience.ts`, `retrieval-reflex.ts`.
 - [x] **P3 — recall knob: optional fuzzy/prefix-expansion resolution.** RESOLVED
   differently by the v0.46.15 identity wave, with a receipt: trigram fuzzy in the
   reflex is deliberately REJECTED — the BrainBench adversarial near-miss class
@@ -7337,15 +7410,96 @@ respective shapes. Small, mechanical; pinned by `test/init-embed-check.test.ts`
   `CREATE UNIQUE INDEX ... ON access_tokens (name) WHERE revoked_at IS NULL` would
   make names honest for humans too. Needs a dedup pass first on brains that already
   carry twins. **Start:** `src/core/migrate.ts` (CONCURRENTLY + `transaction: false`).
-- [ ] **P2 — codex hook lane.** codex-cli 0.147.0 ships a real hook system (hooks.json;
-  PreToolUse…SessionEnd — recorded on `TARGETS['codex-2026-08']` in
-  `src/core/bootstrap/host-specs.ts`), falsifying the old "codex has no hooks" premise.
-  Wiring SessionEnd transcript capture (+ SessionStart context) would give codex
-  sessions the same memory loop Claude Code gets, and supersedes the FF2 notify-sweeper
-  idea. Needs its own dated spec-target verification (payload shapes, deny-unknown-fields
-  config) + e2e before any writer lands. **Trigger:** first user asking why codex
-  sessions don't persist; **Start:** `host-specs.ts` TARGETS + a codex sibling of
-  `writeClaudeHooksAt`.
+- [x] **P2 — codex hook lane.** DONE (Memorable wave): SessionEnd capture landed —
+  `src/core/bootstrap/codex-hooks.ts` (trust-gated two-file writer, verified spec
+  target 2026-08-25) + `src/core/transcripts/codex-hook-lane.ts` + the capture-spec
+  dispatch in hook.ts. SessionStart context on codex remains open (below).
+- [ ] **P3 — codex SessionStart context lane.** The SessionEnd capture lane landed;
+  a SessionStart greeting/context injection lane would close the loop (same
+  trust-gated hooks.json mechanics, `CODEX_HOOK_EVENTS` gains 'SessionStart').
+  **Start:** `src/core/bootstrap/codex-hooks.ts` (writer already generalizes),
+  `src/commands/hook.ts` session-start branch. Filed from the Memorable wave
+  (v0.46.30.0-era, 2026-08-25).
+- [ ] **P1 — OpenClaw tool-call ARGS capture (Memorable value gate).** The openclaw
+  lane ships name-only tool calls (`input: null` — the args field is unobserved in
+  OpenClaw's session format), and Memorable's extraction API REFUSES name-only traces
+  as `no_decisive_steps` (verified live with a synthetic ingest 2026-08-25): openclaw
+  relays are currently rejected politely. One observation run against a real
+  `~/.openclaw/agents/<agent>/sessions/*.jsonl` store must characterize the toolCall
+  args field (+ any result block), then extend `mapOpenclawLine` — the interface
+  (`ToolCallRecord`) is already final, so enrichment is additive. Until then the
+  openclaw lane is plumbing-correct but value-dry. **Start:**
+  `src/core/transcripts/openclaw.ts` (OPENCLAW_SPEC_TARGET note carries the checklist).
+  Filed from the Memorable wave (2026-08-25).
+- [ ] **P3 — native opencode capture lane.** opencode has no characterized session
+  store, no transcript adapter, no discovery root — it rides `HookIo.harness` as a
+  channel label only, and `captureSpecFor('opencode')` deliberately resolves to the
+  claude spec (documented). A native lane needs an observation run against opencode
+  1.18.18 (session store location + format), a new adapter, and a plugin/event-system
+  integration (in-process JS, not a `gbrain hook` subprocess — raises the engine-free
+  question). Until then: `memorable ingest -` is the documented path. **Start:**
+  `docs/mcp/OPENCODE-CLI-PIN.md` + an observation run. Filed from the Memorable wave
+  (2026-08-25).
+- [ ] **P3 — hermes native capture lane.** SQLite one-store-many-sessions breaks the
+  hand-the-hook-a-path contract, and `src/core/transcripts/hermes.ts` is still
+  `provisional` (no populated production sample verified). `memorable ingest` is the
+  documented path. Filed from the Memorable wave (2026-08-25).
+- [ ] **P2 — verify memorable-cli ≥0.3.5 fixes the consent-before-egress ordering.**
+  0.3.4's `record` POSTs the trace to `/v1/extract` BEFORE its consent-checked store
+  (decompile-verified); gbrain mitigates with its own pre-spawn evidence check, but
+  the complete fix is CLI-side (asked in the adoption PR, along with confirming the
+  extraction API accepts arbitrary `harness` strings server-side). When a new CLI
+  version ships, re-verify by decompile and consider relaxing nothing — the gbrain
+  gate stays regardless. Filed from the Memorable wave (2026-08-25).
+- [ ] **P2 — win32: resolveMemorableBin finds `.cmd` shims spawn() refuses to run.**
+  The resolver accepts `.cmd`/`.exe` on win32 but the detached relay spawn passes no
+  `shell: true` — Node/Bun refuse direct `.cmd` spawn since the CVE-2024-27980
+  hardening, the async error is swallowed, and an npm-installed memorable on Windows
+  looks resolvable yet never executes (only the delayed `relay_never_reported` doctor
+  warn surfaces it). Fix: spawn via `cmd.exe /c` for `.cmd`/`.bat`, or resolve the
+  underlying `.js` entry. **Start:** `src/core/context/hook-heartbeat.ts`
+  resolveMemorableBin + the spawn site. Filed from the ship review (2026-08-26).
+- [ ] **P3 — openclaw-only hosts never compact session-receipts.jsonl.** The openclaw
+  lane deliberately skips receipts compaction (hook lane is the ONE compactor —
+  two-writer rename race), so a host running ONLY the openclaw lane grows the file
+  unbounded (slowly: name-only receipts are ~1-2 KB/line vs claude's ~110 KB). Fix
+  shape: a converging-trim discipline like the relay file's, or a quiet-path
+  compaction outside the compact() callback. **Start:**
+  `src/core/context/hook-heartbeat.ts` appendSessionReceipt + context-engine.ts
+  receipt block. Filed from the ship review (2026-08-26).
+- [ ] **P3 — flag-registry generator: exclude spawn-argv string literals.** The
+  text-scan generator picked up `--session` (from the memorable spawn argv) and
+  `--harness` (from imports) into commands' accept-lists, so
+  `gbrain sync --harness codex` is silently accepted instead of failing loud. Teach
+  `scripts/generate-flag-registry.ts` to skip flags that only appear inside
+  spawn()/argv arrays (or add an exclusion marker), then regenerate. **Start:**
+  `scripts/generate-flag-registry.ts` + `src/core/cli-flag-registry.generated.ts`.
+  Filed from the ship review (2026-08-26).
+- [ ] **P3 — consolidate the memorable test fixtures.** The stub `memorable` shell
+  script, the CLI-evidence config seed, and the full opt-in chain are re-implemented
+  in four suites (memorable-relay.serial, context-engine-checkpoint.serial,
+  doctor-memorable, session-receipts) — extract `test/helpers/memorable-fixtures.ts`
+  so a consent-shape change is one edit. Filed from the ship review (2026-08-26).
+- [ ] **P3 — readJsonlTailLines: incremental window growth.** The doubling retry
+  re-opens and re-reads the whole window from scratch (up to ~31 MB cumulative in
+  the pathological case) and zero-fills with Buffer.alloc; read only the
+  newly-uncovered prefix on retry and use allocUnsafe. Rare path (fires only when a
+  window holds zero complete lines). **Start:** `src/core/context/hook-heartbeat.ts`
+  readJsonlTailLines. Filed from the ship review (2026-08-26).
+- [ ] **P2 — openclaw real-plugin door: extend with a receipt+relay assertion.** The
+  per-compaction Memorable receipt is pinned at the unit/serial tier
+  (context-engine-checkpoint.serial MR1-MR3) but the installed-plugin e2e door
+  (`test/e2e/openclaw-plugin-load-real.test.ts`) does not yet assert a receipt lands
+  through the real plugin path; a deadline-seam unit test for the always-skip
+  receipts-compaction posture is also unwritten. Filed from the ship review
+  (2026-08-26).
+- [ ] **P2 — codex e2e door: assert codex EXECUTES the trust-gated hook.** The heavy
+  door asserts the hooks.json + trust-entry pair EXISTS but not that a live
+  `codex exec` session-end actually fires it (a receipt landing after the smoke turn
+  would pin gbrain's codexTrustHash against codex's fingerprint.rs for real — the
+  golden-vector unit test pins OUR recipe, not the consumer's acceptance). **Start:**
+  `test/e2e/bootstrap-real-codex.serial.test.ts` (heavy lane, keyless codex turn).
+  Filed from the ship review (2026-08-26).
 - [ ] **P3 — PGLite admin-lane scoped minting.** `gbrain bootstrap harness` refuses to
   mint under a live PGLite serve (single-writer) and points at pre-mint + `--token`.
   Auto-driving `POST /admin/login` + `POST /admin/api/api-keys` (when
