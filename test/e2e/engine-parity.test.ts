@@ -20,7 +20,7 @@ import type { BrainEngine } from '../../src/core/engine.ts';
 import { getSessionContextState, upsertSessionContextState } from '../../src/core/context/session-state.ts';
 import { linkEntityIdentity, listEntityIdentities } from '../../src/core/entity-identity.ts';
 import { buildEntityCard } from '../../src/core/verbs/entity-card.ts';
-import { hasDatabase, setupDB, teardownDB, getEngine } from './helpers.ts';
+import { hasDatabase, setupDB, setupLegacyEmbeddingDB, teardownDB, getEngine } from './helpers.ts';
 import { TRAVERSE_PATH_ROW_CAP } from '../../src/core/engine-constants.ts';
 import { DENSE_HUB_SLUG, DENSE_HUB_SPOKES, seedDenseHub } from '../helpers/dense-hub.ts';
 
@@ -115,7 +115,7 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
   let pgliteEngine: PGLiteEngine;
 
   beforeAll(async () => {
-    pgEngine = await setupDB();
+    pgEngine = await setupLegacyEmbeddingDB();
     await seedEngine(pgEngine);
 
     pgliteEngine = new PGLiteEngine();
@@ -639,6 +639,7 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
       source_kind: 'capture-cli',
       source_uri: 'file:///tmp/parity.md',
       ingested_via: 'put_page',
+      source_path: 'wiki/provenance-parity.md',
     };
     await pgEngine.putPage(slug, input);
     await pgliteEngine.putPage(slug, input);
@@ -648,6 +649,11 @@ describeBoth('Engine parity — Postgres vs PGLite', () => {
 
     expect(pgPage).not.toBeNull();
     expect(pglitePage).not.toBeNull();
+
+    // getPage projects source_path on both engines (the import skip path
+    // compares it before issuing the #4588 refresh UPDATE).
+    expect(pgPage!.source_path).toBe('wiki/provenance-parity.md');
+    expect(pglitePage!.source_path).toBe('wiki/provenance-parity.md');
 
     // All 4 provenance fields must match across engines.
     expect(pgPage!.source_kind).toBe('capture-cli');
@@ -1299,7 +1305,7 @@ describeBoth('Engine parity — relationalFanout', () => {
   let pgliteEngine: PGLiteEngine;
 
   beforeAll(async () => {
-    pgEngine = await setupDB();
+    pgEngine = await setupLegacyEmbeddingDB();
     await seedRelational(pgEngine);
     pgliteEngine = new PGLiteEngine();
     await pgliteEngine.connect({});
@@ -1832,7 +1838,7 @@ describeBoth('Engine parity — CJK keyword fallback (#3986)', () => {
   }
 
   beforeAll(async () => {
-    pgEngine = await setupDB();
+    pgEngine = await setupLegacyEmbeddingDB();
     await seedCJK(pgEngine);
     pgliteEngine = new PGLiteEngine();
     await pgliteEngine.connect({});
@@ -2345,7 +2351,7 @@ describeBoth('Engine parity — facts TTL read-time validity (WP5)', () => {
   let pgliteEngine: PGLiteEngine;
 
   beforeAll(async () => {
-    pgEngine = await setupDB();
+    pgEngine = await setupLegacyEmbeddingDB();
     pgliteEngine = new PGLiteEngine();
     await pgliteEngine.connect({});
     await pgliteEngine.initSchema();
@@ -2456,5 +2462,114 @@ describeBoth('Engine parity — facts TTL read-time validity (WP5)', () => {
     expect(pg.health.top).toEqual([`${ENTITY}:3`, `${EMB_ENTITY}:1`].sort());
     // Backlog counter matches what the consolidator's active read can see.
     expect(pg.backlog).toBe(4);
+  });
+});
+
+// #4670 — getCalleesOf `bareFallback` must behave identically on both engines:
+// exact match first; on a zero-row miss for a delimiter-free input, re-key on
+// content_chunks.symbol_name (bare); never for delimited inputs; source scoping
+// intact on the fallback path.
+describeBoth('Engine parity — getCalleesOf bare-name fallback (#4670)', () => {
+  let pgEngine: BrainEngine;
+  let pgliteEngine: PGLiteEngine;
+
+  beforeAll(async () => {
+    pgEngine = await setupDB();
+    pgliteEngine = new PGLiteEngine();
+    await pgliteEngine.connect({});
+    await pgliteEngine.initSchema();
+    for (const eng of [pgEngine, pgliteEngine]) {
+      const slug = 'parity/order-service-cs';
+      await eng.putPage(slug, {
+        type: 'code', page_kind: 'code', title: 'src/OrderService.cs (c_sharp)',
+        compiled_truth: 'public async Task SubmitAsync() { ValidateRequest(); }', timeline: '',
+      });
+      await eng.upsertChunks(slug, [{
+        chunk_index: 0,
+        chunk_text: 'public async Task SubmitAsync() { ValidateRequest(); }',
+        chunk_source: 'compiled_truth',
+        language: 'c_sharp',
+        symbol_name: 'SubmitAsync',
+        symbol_type: 'method',
+        symbol_name_qualified: 'MyApp.Services.OrderService.SubmitAsync',
+      }]);
+      const chunk = (await eng.getChunks(slug))[0]!;
+      await eng.addCodeEdges([{
+        from_chunk_id: chunk.id, to_chunk_id: null,
+        from_symbol_qualified: 'MyApp.Services.OrderService.SubmitAsync',
+        to_symbol_qualified: 'ValidateRequest', edge_type: 'calls',
+      }]);
+    }
+  }, 90_000);
+
+  afterAll(async () => {
+    await pgliteEngine.disconnect();
+    await teardownDB();
+  }, 30_000);
+
+  test('bare input: exact miss without the opt, one row with it; qualified + delimited unchanged', async () => {
+    for (const eng of [pgEngine, pgliteEngine]) {
+      expect(await eng.getCalleesOf('SubmitAsync', { allSources: true })).toHaveLength(0);
+      const rows = await eng.getCalleesOf('SubmitAsync', { allSources: true, bareFallback: true });
+      expect(rows.map(r => r.to_symbol_qualified)).toEqual(['ValidateRequest']);
+      expect(await eng.getCalleesOf('MyApp.Services.OrderService.SubmitAsync', { allSources: true, bareFallback: true })).toHaveLength(1);
+      expect(await eng.getCalleesOf('Other.SubmitAsync', { allSources: true, bareFallback: true })).toHaveLength(0);
+      expect(await eng.getCalleesOf('Submit_sync', { allSources: true, bareFallback: true })).toHaveLength(0);
+      expect(await eng.getCalleesOf('SubmitAsync', { sourceId: 'not-a-source', bareFallback: true })).toHaveLength(0);
+    }
+  });
+});
+
+// getRawData soft-delete filter. Companion to the #4587 soft-delete blocks
+// above, but NOT behind describeBoth: the PGLite arm always runs (so the
+// filter is exercised in every sandbox) and the Postgres arm joins when
+// DATABASE_URL is configured (CI docker Postgres).
+describe('getRawData soft-delete filter — parity (PGLite always; Postgres when DATABASE_URL is set)', () => {
+  let pglite: PGLiteEngine;
+  const arms: Array<{ name: string; eng: BrainEngine }> = [];
+
+  beforeAll(async () => {
+    pglite = new PGLiteEngine();
+    await pglite.connect({});
+    await pglite.initSchema();
+    arms.push({ name: 'pglite', eng: pglite });
+    if (!SKIP_PG) arms.push({ name: 'postgres', eng: await setupDB() });
+  }, 90_000);
+
+  afterAll(async () => {
+    await pglite.disconnect();
+    if (!SKIP_PG) await teardownDB();
+  }, 30_000);
+
+  test('putRawData → softDeletePage hides raw_data on every read shape; includeDeleted:true still returns it; restorePage makes it visible again', async () => {
+    expect(arms.length).toBeGreaterThan(0);
+    for (const { name, eng } of arms) {
+      const slug = 'wiki/raw-soft-delete';
+      await eng.putPage(slug, { type: 'note', title: 'raw', compiled_truth: 'body', timeline: '' }, { sourceId: 'default' });
+      await eng.putRawData(slug, 'transcript:test', { k: 'v' }, { sourceId: 'default' });
+      expect((await eng.getRawData(slug, undefined, { sourceId: 'default' })).length).toBe(1);
+
+      expect(await eng.softDeletePage(slug, { sourceId: 'default' })).not.toBeNull();
+      // Every WHERE shape (unscoped, scalar source, federated sourceIds,
+      // with/without a raw source filter) hides the soft-deleted page.
+      const hidden = [
+        await eng.getRawData(slug),
+        await eng.getRawData(slug, 'transcript:test'),
+        await eng.getRawData(slug, undefined, { sourceId: 'default' }),
+        await eng.getRawData(slug, 'transcript:test', { sourceId: 'default' }),
+        await eng.getRawData(slug, undefined, { sourceIds: ['default'] }),
+        await eng.getRawData(slug, 'transcript:test', { sourceIds: ['default'] }),
+      ];
+      for (const rows of hidden) expect({ arm: name, rows }).toEqual({ arm: name, rows: [] });
+
+      // Explicit opt-in (export / engine migration / ingest healing) still sees it.
+      expect((await eng.getRawData(slug, undefined, { sourceId: 'default', includeDeleted: true })).length).toBe(1);
+      expect((await eng.getRawData(slug, 'transcript:test', { sourceIds: ['default'], includeDeleted: true })).length).toBe(1);
+      expect((await eng.getRawData(slug, undefined, { includeDeleted: true })).length).toBe(1);
+
+      expect(await eng.restorePage(slug, { sourceId: 'default' })).toBe(true);
+      expect((await eng.getRawData(slug, undefined, { sourceId: 'default' })).length).toBe(1);
+      await eng.deletePage(slug, { sourceId: 'default' });
+    }
   });
 });

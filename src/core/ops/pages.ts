@@ -10,9 +10,11 @@
 import type { BrainEngine } from '../engine.ts';
 import { clampSearchLimit } from '../engine.ts';
 import type { Page, PageType } from '../types.ts';
-import { importFromContent } from '../import-file.ts';
+import { importFromContent, type ImportEmbeddingResult } from '../import-file.ts';
 import { serializePageToMarkdown } from '../markdown.ts';
-import { writePageThrough, deletePageThrough, resolvePageWriteTarget, type WriteThroughResult } from '../write-through.ts';
+import { writePageThrough, deletePageThrough, resolvePageWriteTarget, isWriteThroughDisabled, withNoRepoWriteThroughWarning, type PageWriteTarget, type WriteThroughResult } from '../write-through.ts';
+import { hasSourceFilesystemLock, withSourceFilesystemLock, assertSourceFilesystemActive } from '../minions/source-filesystem.ts';
+import { LockUnavailableError } from '../db-lock.ts';
 import { extractPageLinks, isAutoLinkEnabled, isAutoTimelineEnabled, isGlobalBasenameEnabled, parseTimelineEntries, makeResolver, type UnresolvedFrontmatterRef } from '../link-extraction.ts';
 // #3190: pack-aware link typing on the put_page auto-link path.
 import { loadActivePackForLocalEngine } from '../schema-pack/best-effort.ts';
@@ -332,7 +334,7 @@ const fetch_page: Operation = {
 
 const put_page: Operation = {
   name: 'put_page',
-  description: 'Write or replace a page (markdown with frontmatter). REPLACES the entire page; this is not a partial edit. Before modifying an existing page, read its canonical content with `get_page include_content:true`, then submit the complete page. Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. Remote (MCP) callers: body wikilinks are NOT reconciled into the graph — auto_link/auto_timeline are skipped for untrusted writers (response reports auto_links: {skipped: "remote"}); use local capture/put_page for link extraction. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
+  description: 'Write or replace a page (markdown with frontmatter). REPLACES the entire page; this is not a partial edit. Before modifying an existing page, read its canonical content with `get_page include_content:true`, then submit the complete page. Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. Remote (MCP) callers: body wikilinks are NOT reconciled into the graph — auto_link/auto_timeline are skipped for untrusted writers (response reports auto_links: {skipped: "remote"}); a stdio `gbrain serve` sweeps them at startup + on idle; `gbrain serve --http` does not self-sweep — run `gbrain sweep --once`, or use local capture/put_page for inline link extraction. Remote callers also receive write_through.warning when the resolved write source has no repo configured, because the DB row has no durable markdown file. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).',
   params: {
     slug: { type: 'string', required: true, description: 'Page slug' },
     content: { type: 'string', required: true, description: 'Complete markdown content with YAML frontmatter. REPLACES the entire page; this is not a partial edit. Read the canonical page first with `get_page include_content:true` before modifying it.' },
@@ -349,7 +351,7 @@ const put_page: Operation = {
   },
   mutating: true,
   scope: 'write',
-  handler: async (ctx, p) => {
+  handler: async function putPage(ctx, p, deferEmbedding?: (complete: () => Promise<ImportEmbeddingResult>) => void): Promise<Record<string, unknown>> {
     const slug = p.slug as string;
     validatePageSlug(slug);
 
@@ -389,6 +391,32 @@ const put_page: Operation = {
     if (ctx.viaSubagent === true && ctx.auth) await requireWritablePage(ctx, slug.toLowerCase(), 'put_page', 'page', true);
 
     if (ctx.dryRun) return { dry_run: true, action: 'put_page', slug: p.slug };
+
+    const isSandboxSubagent = ctx.viaSubagent === true
+      && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
+    if (!isSandboxSubagent && !(await isWriteThroughDisabled(ctx.engine))) {
+      const target = await resolvePageWriteTarget(ctx.engine, slug.toLowerCase(), ctx.sourceId ?? 'default');
+      if (!target.ok) {
+        requirePageWriteThrough({ written: false, skipped: target.skipped });
+      } else if (!hasSourceFilesystemLock(target.writeRoot)) {
+        let entered = false;
+        let completeEmbedding: (() => Promise<ImportEmbeddingResult>) | undefined;
+        try {
+          const result = await withSourceFilesystemLock(ctx.engine, target.writeRoot, () => {
+            entered = true;
+            return putPage(ctx, p, complete => { completeEmbedding = complete; });
+          });
+          return { ...result, ...(completeEmbedding ? { embedding: await completeEmbedding() } : {}) };
+        } catch (err) {
+          if (entered || !(err instanceof LockUnavailableError)) throw err;
+          throw new OperationError(
+            'storage_busy',
+            'put_page: the source worktree is busy. This write was not applied and was not queued.',
+            'Wait for the current source operation to finish, then read the latest page and retry. No durable write queue is available.',
+          );
+        }
+      }
+    }
 
     // Empty-overwrite guard: empty/whitespace-only content over an existing
     // non-empty page is almost always an input-plumbing failure (e.g. a
@@ -444,8 +472,23 @@ const put_page: Operation = {
       // Pack load failed; fall through to legacy inferType behavior.
       activePack = undefined;
     }
+    let writeThrough: (Omit<WriteThroughResult, 'skipped'> & { skipped?: WriteThroughResult['skipped'] | 'subagent_sandbox' }) | undefined;
+    const persistPage = async (engine: BrainEngine, resolvedSlug: string) => {
+      const via = ctx.remote === false ? 'put_page' : 'mcp:put_page';
+      const written = await writePageThrough(engine, resolvedSlug, {
+        sourceId: ctx.sourceId ?? 'default',
+        frontmatterOverrides: { ingested_via: via, ingested_at: new Date().toISOString(), source_kind: via },
+        logger: ctx.logger,
+      });
+      requirePageWriteThrough(written);
+      assertSourceFilesystemActive();
+      writeThrough = written;
+    };
+    let completeEmbedding: (() => Promise<ImportEmbeddingResult>) | undefined;
     const result = await importFromContent(ctx.engine, slug, p.content as string, {
       noEmbed,
+      onPostCommitEmbedding: complete => { completeEmbedding = complete; },
+      ...(!isSandboxSubagent ? { beforeCommit: persistPage } : {}),
       // v0.42 (#1699): untrusted callers can't smuggle gate-owned frontmatter
       // markers (quarantine/content_flag/embed_skip). Fail-closed — anything
       // not strictly local is remote (matches CV6 / v0.26.9 F7b posture).
@@ -528,76 +571,10 @@ const put_page: Operation = {
       }
     }
 
-    // v0.38 put_page write-through (ingestion cathedral):
-    // After importFromContent succeeds, if `sync.repo_path` resolves to a
-    // real directory, persist the markdown file to disk alongside the DB
-    // row. A failure here is fatal to the call (see the check right below)
-    // except for the deliberate DB-only configurations.
-    //
-    // Trust gating:
-    //   - Subagent sandbox (viaSubagent without allowedSlugPrefixes) → DB-only.
-    //   - All other writes → write-through.
-    // put_page's own trust-gating produces two skip reasons ('subagent_sandbox',
-    // 'dry_run') that never come out of writePageThrough itself — widen the
-    // field rather than losing the commit/pushed/lastPushStatus typing.
-    let writeThrough: (Omit<WriteThroughResult, 'skipped'> & { skipped?: WriteThroughResult['skipped'] | 'subagent_sandbox' | 'dry_run' }) | undefined;
-    const isSandboxSubagent = ctx.viaSubagent === true
-      && !(Array.isArray(ctx.allowedSlugPrefixes) && ctx.allowedSlugPrefixes.length > 0);
-    if (!ctx.dryRun && result.status !== 'error' && !isSandboxSubagent) {
-      const sourceId = ctx.sourceId ?? 'default';
-      const provenanceVia = ctx.remote === false ? 'put_page' : 'mcp:put_page';
-      // Shared canonical write-through (also used by `gbrain brainstorm/lsd
-      // --save`). Renders the file from the saved DB row and writes it
-      // atomically; never throws (failures land in skipped/error).
-      writeThrough = await writePageThrough(ctx.engine, result.slug, {
-        sourceId,
-        frontmatterOverrides: {
-          ingested_via: provenanceVia,
-          ingested_at: new Date().toISOString(),
-          source_kind: provenanceVia,
-        },
-        logger: ctx.logger,
-      });
+    if (!writeThrough && result.parsedPage && result.status !== 'error' && !isSandboxSubagent) {
+      await persistPage(ctx.engine, result.slug);
     } else if (isSandboxSubagent) {
       writeThrough = { written: false, skipped: 'subagent_sandbox' };
-    } else if (ctx.dryRun) {
-      writeThrough = { written: false, skipped: 'dry_run' };
-    }
-
-    // The markdown file is the system of record (docs/architecture/
-    // system-of-record.md); the DB row is a derived cache. The deliberate,
-    // by-design DB-only outcomes are `no_repo_configured` (no `sync.repo_path`
-    // set at all), `disabled_by_config` (operator opted out via
-    // `sync.write_through=false`), `subagent_sandbox`, and `dry_run` (no real
-    // write was supposed to happen). Every other non-written outcome — a
-    // thrown write error, or a guard that REFUSED to write into an existing
-    // repo (missing dir, sibling-source collision, escaped path, case-fold
-    // clash, unreadable row) — means a file was supposed to exist and
-    // doesn't, so put_page must not report success.
-    if (writeThrough && !writeThrough.written
-      && writeThrough.skipped !== 'no_repo_configured'
-      && writeThrough.skipped !== 'disabled_by_config'
-      && writeThrough.skipped !== 'subagent_sandbox'
-      && writeThrough.skipped !== 'dry_run') {
-      // Roll back rather than leave an index-only orphan, but only when this
-      // call is what created the row: created_at === updated_at is set by
-      // the SAME insert statement (the ON CONFLICT UPDATE branch never
-      // touches created_at), so equality here means "brand new, this call."
-      // An update (or a dedup hit resolved to a pre-existing page) is left
-      // alone — the prior file on disk still matches the prior DB content.
-      try {
-        const row = await ctx.engine.getPage(result.slug, { sourceId: ctx.sourceId ?? 'default' });
-        if (row && row.created_at.getTime() === row.updated_at.getTime()) {
-          await ctx.engine.deletePage(result.slug, { sourceId: ctx.sourceId ?? 'default' });
-        }
-      } catch {
-        // best-effort; the error thrown below still surfaces the failure
-      }
-      throw new OperationError(
-        'storage_error',
-        `put_page: the page content could not be written to disk (${writeThrough.skipped ?? writeThrough.error}).`,
-        'Check that the configured repo path exists and is writable, then retry.',
-      );
     }
 
     // Auto-link post-hook: runs AFTER importFromContent (which is its own
@@ -633,7 +610,7 @@ const put_page: Operation = {
       // been reconciled into the graph.
       const hint = 'auto_link/auto_timeline run for trusted local writers only; '
         + 'body wikilinks were saved as text but NOT reconciled into the graph. '
-        + 'Use local `gbrain capture`/`gbrain call put_page` for link extraction.';
+        + 'A stdio `gbrain serve` sweeps them at startup + on idle; `gbrain serve --http` does not self-sweep — run `gbrain sweep --once` (delegates to a live serve over IPC), use local `gbrain capture`/`gbrain call put_page` for inline link extraction, or add_link for edges needed now.';
       autoLinks = { skipped: 'remote', hint };
       autoTimeline = { skipped: 'remote', hint };
     } else if (result.parsedPage) {
@@ -815,10 +792,16 @@ const put_page: Operation = {
       }
     }
 
+    let embedding: ImportEmbeddingResult | undefined;
+    if (completeEmbedding) {
+      if (deferEmbedding) deferEmbedding(completeEmbedding);
+      else embedding = await completeEmbedding();
+    }
     return {
       slug: result.slug,
       status: result.status === 'imported' ? 'created_or_updated' : result.status,
       chunks: result.chunks,
+      ...(embedding ? { embedding } : {}),
       // #3984: a skipped/error status without the reason is a silent no-op to
       // MCP callers (e.g. the >5MB size guard returned bare status 'skipped'
       // and the agent had no idea why the page never appeared). Thread
@@ -831,11 +814,20 @@ const put_page: Operation = {
       ...(writerLint ? { writer_lint: writerLint } : {}),
       ...(factsQueued ? { facts_backstop: factsQueued } : {}),
       ...(chronicleQueued ? { chronicle_backstop: chronicleQueued } : {}),
-      ...(writeThrough ? { write_through: writeThrough } : {}),
+      ...(writeThrough ? { write_through: ctx.remote !== false ? withNoRepoWriteThroughWarning(writeThrough, ctx.sourceId ?? 'default') : writeThrough } : {}),
     };
   },
   cliHints: { name: 'put', positional: ['slug'], stdin: 'content' },
 };
+
+function requirePageWriteThrough(result: WriteThroughResult): void {
+  if (result.written || result.skipped === 'no_repo_configured' || result.skipped === 'disabled_by_config') return;
+  throw new OperationError(
+    'storage_error',
+    `put_page: the page content could not be written to disk (${result.skipped ?? result.error}).`,
+    'Check that the configured repo path exists and is writable, then retry.',
+  );
+}
 
 // v0.31.2: isFactsBackstopEligible moved to src/core/facts/eligibility.ts
 // so sync.ts, file_upload, code_import, and runFactsBackstop all share one
@@ -1102,12 +1094,21 @@ async function runAutoLink(
   return { ...result, unresolved };
 }
 
+/** What a purge cannot reach — surfaced on every purged response so a credential remediation never stops at the row. */
+const PURGE_RESIDUALS = 'Brain-repo git history, synced working-tree copies, exports, compiled context files and slug-keyed derived rows (takes, open loops, file records) may still hold the content — rotate the credential and rewrite or regenerate those copies.';
+/** A purge that leaves the markdown file behind is not a purge (the next sync re-imports it): an unlink ERROR fails closed, naming the path, and the row stays soft-deleted so the operator fixes the cause and re-runs. Non-error skips (no repo, disabled, file absent) proceed. */
+function assertPurgeArtifactGone(slug: string, wt: { removed: boolean; error?: string }, target: PageWriteTarget | undefined): void {
+  if (wt.removed || wt.error === undefined) return;
+  const path = target?.ok ? target.filePath : 'its markdown file';
+  throw new OperationError('storage_error', `purge ${slug}: could not remove ${path}: ${wt.error}`, 'Fix the file permissions (or remove the file by hand) and re-run `gbrain delete <slug> --purge`; the row stays soft-deleted until its file is gone.');
+}
 const delete_page: Operation = {
   name: 'delete_page',
-  description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed.',
+  description: 'Soft-delete a page and remove its markdown file from the source working tree (the source local_path, or sync.repo_path when the source has none). File removal is skipped when sync.write_through is off; the result write_through field reports removed + path, or a skipped reason. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h, which re-creates the file. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed. purge: true (local CLI only — `gbrain delete <slug> --purge`) removes the row and its chunks/links/raw data immediately with no recovery window; use it when a page must not linger (e.g. it captured a credential); the response names the copies a purge cannot reach (git history, exports, derived rows) — rotate first. A purge never reports success while the page\'s markdown file remains: on an already-soft-deleted page it retries the file removal against the recorded path, and a removal error (permissions) fails with storage_error naming the file — fix it and re-run; the row stays soft-deleted until the file is gone. Remote/MCP callers asking for purge get permission_denied (the soft-delete path stays available to them); status purged always carries write_through.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the page to soft-delete, e.g. 'people/alice-example'." },
     source_id: { type: 'string', description: "#4329: source holding the row to soft-delete (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target their write source — federated read grants do not confer delete access." },
+    purge: { type: 'boolean', description: 'Hard-delete immediately after the soft-delete (no 72h recovery; status purged). Honored only for the trusted local CLI; remote/MCP callers get permission_denied (a non-boolean value is invalid_params) and keep the soft-delete path.' },
   },
   mutating: true,
   scope: 'write',
@@ -1118,7 +1119,18 @@ const delete_page: Operation = {
     // the delete landed on ctx.sourceId's row — the wrong-source soft-delete).
     const requestedSource = parseSourceIdParam(p.source_id, 'delete_page');
     if (requestedSource !== undefined) assertSourceInWriteGrant(ctx, requestedSource);
-    if (ctx.dryRun) return { dry_run: true, action: 'soft_delete_page', slug };
+    // purge: strict boolean, trusted-local only (fail-closed: anything not
+    // strictly remote === false is a remote caller). The hard-delete
+    // primitive is the point of no return, so it never rides an agent-facing
+    // transport — the operator types it.
+    if (p.purge !== undefined && typeof p.purge !== 'boolean') {
+      throw new OperationError('invalid_params', 'purge must be a boolean.', 'Pass purge: true (CLI: gbrain delete <slug> --purge).');
+    }
+    const purge = p.purge === true;
+    if (purge && ctx.remote !== false) {
+      throw new OperationError('permission_denied', 'purge is only available to the local CLI.', 'Remote callers soft-delete only; run `gbrain delete <slug> --purge` on the host to remove a page immediately.');
+    }
+    if (ctx.dryRun) return { dry_run: true, action: purge ? 'purge_page' : 'soft_delete_page', slug };
     // v0.31.8 (D7): thread ctx.sourceId so multi-source brains soft-delete the
     // intended row instead of always targeting (default, slug).
     const sourceOpts = requestedSource
@@ -1148,6 +1160,23 @@ const delete_page: Operation = {
       if (!existing) {
         throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug (and source_id on a multi-source brain).');
       }
+      if (purge) {
+        // Remediation path (O4-2): the earlier soft-delete's unlink may have
+        // FAILED (permissions), leaving the credential-bearing .md for the next
+        // sync to resurrect — so RETRY the removal against the tombstone's OWN
+        // recorded path (the active-row resolution above misses it) and fail
+        // closed on error before the row is dropped. Same response shape as
+        // the live-row purge; the outcome is the real one, never a fabricated skip.
+        const tombstoneTarget = isSandboxSubagent
+          ? undefined
+          : await resolvePageWriteTarget(ctx.engine, slug, wtSourceId, { includeDeleted: true });
+        const retried = isSandboxSubagent
+          ? { removed: false, skipped: 'subagent_sandbox' as const }
+          : await deletePageThrough(ctx.engine, slug, { sourceId: wtSourceId, logger: ctx.logger, target: tombstoneTarget });
+        assertPurgeArtifactGone(slug, retried, tombstoneTarget);
+        await ctx.engine.deletePage(slug, sourceOpts);
+        return { status: 'purged', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), write_through: retried, residuals: PURGE_RESIDUALS };
+      }
       return { status: 'already_soft_deleted', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), deleted_at: existing.deleted_at };
     }
     // #4022: remove the on-disk artifact too. Pre-fix this was DB-only, so the
@@ -1159,16 +1188,25 @@ const delete_page: Operation = {
     const writeThrough = isSandboxSubagent
       ? { removed: false, skipped: 'subagent_sandbox' as const }
       : await deletePageThrough(ctx.engine, slug, { sourceId: wtSourceId, logger: ctx.logger, target });
+    if (purge) {
+      // Soft-delete first (artifact removal + the same audit shape), then the
+      // hard primitive: cascades through chunks/links/raw_data via FKs. An
+      // artifact-removal ERROR fails closed here too — the row stays a
+      // tombstone and the re-run resumes on the remediation path above.
+      assertPurgeArtifactGone(slug, writeThrough, target);
+      await ctx.engine.deletePage(slug, sourceOpts);
+      return { status: 'purged', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), write_through: writeThrough, residuals: PURGE_RESIDUALS };
+    }
     // Echo the targeted source so a multi-source caller can verify WHICH row
     // the delete landed on (#4329's false-confidence failure mode).
-    return { status: 'soft_deleted', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), recoverable_until: 'now + 72h via restore_page', write_through: writeThrough };
+    return { status: 'soft_deleted', slug, ...(sourceOpts.sourceId ? { source_id: sourceOpts.sourceId } : {}), recoverable_until: 'now + 72h via restore_page (remove immediately instead: gbrain delete <slug> --purge, local CLI only)', write_through: writeThrough };
   },
   cliHints: { name: 'delete', positional: ['slug'] },
 };
 
 const restore_page: Operation = {
   name: 'restore_page',
-  description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
+  description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at) and re-create its markdown file on disk (the counterpart to delete_page removing it; the result write_through field reports the outcome). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
   params: {
     slug: { type: 'string', required: true, description: "Slug of the soft-deleted page to restore, e.g. 'people/alice-example'." },
     source_id: { type: 'string', description: "#4329: source holding the row to restore (a multi-source brain can hold the same slug in several sources). Defaults to ctx.sourceId. Remote callers may only target their write source — federated read grants do not confer restore access." },

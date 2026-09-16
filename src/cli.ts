@@ -36,6 +36,7 @@ import type { Operation, OperationContext } from './core/operations.ts';
 import { shouldForceExitAfterMain, finishCliTeardown, flushThenExit, currentExitCode, setCliExitVerdict, writeStdoutFinal, installStdoutPipeDelivery } from './core/cli-force-exit.ts';
 import { serializeMarkdown } from './core/markdown.ts';
 import { parseGlobalFlags, setCliOptions, getCliOptions } from './core/cli-options.ts';
+import { runCliPreflight } from './core/cli-preflight.ts';
 import { conceptNudge } from './core/search/query-intent.ts';
 import type { CliOptions } from './core/cli-options.ts';
 import { callRemoteTool, RemoteMcpError, unpackToolResult, extractResponseMeta } from './core/mcp-client.ts';
@@ -449,26 +450,15 @@ function maybeEmitUpdateMarker(command: string): void {
 }
 
 async function main() {
+  // cwd-.env quarantine → ~/.gbrain/.env → #3688 guardrails loader (fail-closed).
+  await runCliPreflight();
+
   // Parse global flags (--quiet / --progress-json / --progress-interval)
   // BEFORE command dispatch, so `gbrain --progress-json doctor` works.
   // The stripped argv is what the command sees.
   const rawArgs = process.argv.slice(2);
   const { cliOpts, rest: args } = parseGlobalFlags(rawArgs);
   setCliOptions(cliOpts);
-
-  // #3688: operator-configured guardrail providers load before ANY command
-  // dispatch. Fail-closed by design: when GBRAIN_GUARDRAILS_MODULE is set but
-  // broken, abort rather than silently run without the operator's firewall.
-  // (Unset → zero cost, the OSS distribution stays inert.)
-  if (process.env.GBRAIN_GUARDRAILS_MODULE) {
-    try {
-      const { loadGuardrailProvidersFromEnv } = await import('./core/guardrails.ts');
-      await loadGuardrailProvidersFromEnv();
-    } catch (err) {
-      console.error(`guardrails: ${(err as Error)?.message ?? String(err)}`);
-      process.exit(1);
-    }
-  }
 
   let command = args[0];
 
@@ -1946,7 +1936,7 @@ export function formatResult(
 // work on any install shape.
 export const THIN_CLIENT_REFUSED_COMMANDS = new Set([
   'sync', 'embed', 'extract', 'extract-conversation-facts', 'enrich', 'migrate', 'retrieval-upgrade', 'apply-migrations',
-  'repair-jsonb', 'orphans', 'integrity', 'serve',
+  'repair-jsonb', 'orphans', 'integrity', 'serve', 'call',
   // v0.43 (#2095): watch streams against a LOCAL engine; thin clients get
   // the volunteer_context MCP op instead.
   'watch',
@@ -1994,6 +1984,7 @@ export const THIN_CLIENT_REFUSED_COMMANDS = new Set([
  * place during code review.
  */
 const THIN_CLIENT_REFUSE_HINTS: Record<string, string> = {
+  call: '`call` dispatches against a local engine. Use the named CLI command or an authorized MCP tool through your agent, or run `gbrain call` on the host.',
   sync: 'sync runs on the host. Use the dedicated `sync_brain` MCP operation, or run `gbrain sync` on the host.',
   embed: 'embed runs on the host. Run `gbrain embed` or `gbrain cycle` on the host machine.',
   extract: 'extract runs on the host. Run `gbrain extract` or `gbrain cycle` on the host machine.',
